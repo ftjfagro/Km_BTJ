@@ -7,6 +7,11 @@ const SOLICITANTE = "Felipe Torquato Junqueira Franco";
 const SETOR = "Diretor";
 const CPF = "372.742.538-59";
 
+// URL fixa do Apps Script (grava lançamentos na planilha + faz a leitura do
+// odômetro via OpenAI). É infraestrutura do app, não configuração do usuário —
+// por isso fica embutida aqui. A chave da OpenAI mora dentro do Apps Script.
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwDv9SdQANzfKb5oWQAU_7evjHN5BKLbW3kxb2eZbhVM1Weku0xUmDyHup7KRVTF8bPdw/exec";
+
 const CITIES = ["Sud", "Ilha", "RP", "SP", "Campinas", "Jundiaí", "Outra"];
 
 const WEEKDAYS_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
@@ -38,7 +43,6 @@ function monthLabel(iso) {
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 const KEY = "km_registros_v2";
-const SHEET_URL_STORAGE = "km_sheet_url";
 
 function loadRecords() {
   try {
@@ -53,22 +57,11 @@ function saveRecords(recs) {
   localStorage.setItem(KEY, JSON.stringify(recs));
 }
 
-function loadSettings() {
-  return {
-    sheetUrl: localStorage.getItem(SHEET_URL_STORAGE) || "",
-  };
-}
-
-function saveSettings({ sheetUrl }) {
-  localStorage.setItem(SHEET_URL_STORAGE, sheetUrl || "");
-}
-
 // ─── OCR / AI helpers ─────────────────────────────────────────────────────────
 // A leitura do odômetro roda no Apps Script (que guarda a chave da OpenAI),
 // não no navegador — assim nenhum aparelho precisa da chave.
-async function extractOdometerFromImage(base64, sheetUrl) {
-  if (!sheetUrl) throw new Error("Configure a URL do Apps Script em Configurações antes de usar a leitura por foto.");
-  const res = await fetch(sheetUrl, {
+async function extractOdometerFromImage(base64) {
+  const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify({ action: "ocr", image: base64 }),
@@ -79,10 +72,9 @@ async function extractOdometerFromImage(base64, sheetUrl) {
 }
 
 // ─── Google Sheets sync ───────────────────────────────────────────────────────
-async function syncToSheet(record, sheetUrl) {
-  if (!sheetUrl) return { ok: false, skipped: true };
+async function syncToSheet(record) {
   try {
-    await fetch(sheetUrl, {
+    await fetch(APPS_SCRIPT_URL, {
       method: "POST",
       mode: "no-cors", // Apps Script não retorna CORS headers; gravação ocorre mesmo assim
       headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -187,7 +179,7 @@ function Card({ children, className = "" }) {
 }
 
 // ─── New Entry Form ────────────────────────────────────────────────────────────
-function EntryForm({ onSave, onCancel, initial = null, sheetUrl }) {
+function EntryForm({ onSave, onCancel, initial = null }) {
   const [data, setData] = useState(initial?.data ?? todayISO());
   const [origem, setOrigem] = useState(initial?.origem ?? "Sud");
   const [origemCustom, setOrigemCustom] = useState("");
@@ -202,10 +194,6 @@ function EntryForm({ onSave, onCancel, initial = null, sheetUrl }) {
   const total = kmRodado * RATE_PER_KM;
 
   async function handlePhoto(phase, file) {
-    if (!sheetUrl) {
-      alert("Configure a URL do Apps Script em Configurações (⚙) antes de usar a leitura por foto.");
-      return;
-    }
     setLoading(true);
     try {
       const b64 = await new Promise((res, rej) => {
@@ -214,7 +202,7 @@ function EntryForm({ onSave, onCancel, initial = null, sheetUrl }) {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      const km = await extractOdometerFromImage(b64, sheetUrl);
+      const km = await extractOdometerFromImage(b64);
       if (km) {
         if (phase === "inicial") setKmInicial(String(km));
         else setKmFinal(String(km));
@@ -384,55 +372,12 @@ function EntryForm({ onSave, onCancel, initial = null, sheetUrl }) {
   );
 }
 
-// ─── Settings Panel ─────────────────────────────────────────────────────────
-function SettingsPanel({ settings, onSave, onCancel }) {
-  const [sheetUrl, setSheetUrl] = useState(settings.sheetUrl || "");
-
-  return (
-    <Card className="p-5 mt-4">
-      <h2 className="font-semibold text-gray-800 mb-1">Configurações</h2>
-      <p className="text-xs text-gray-400 mb-4">Salvo só neste navegador. Nunca vai pro GitHub.</p>
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">URL do Apps Script (planilha)</label>
-          <input
-            type="text"
-            placeholder="https://script.google.com/macros/s/.../exec"
-            value={sheetUrl}
-            onChange={e => setSheetUrl(e.target.value)}
-            className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <p className="text-xs text-gray-400 mt-1">
-            URL gerada ao publicar o Web App do Apps Script na sua planilha. Usada tanto para gravar os lançamentos
-            quanto para ler o odômetro nas fotos — a chave da OpenAI mora no próprio Apps Script, não aqui.
-          </p>
-        </div>
-      </div>
-      <div className="flex gap-2 mt-5">
-        <button
-          onClick={() => onSave({ sheetUrl: sheetUrl.trim() })}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl text-sm transition"
-        >
-          Salvar
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-2.5 rounded-xl text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 transition"
-        >
-          Cancelar
-        </button>
-      </div>
-    </Card>
-  );
-}
-
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [records, setRecords] = useState([]);
-  const [view, setView] = useState("list"); // list | new | edit | export | settings
+  const [view, setView] = useState("list"); // list | new | edit | export
   const [editRec, setEditRec] = useState(null);
   const [filterMonth, setFilterMonth] = useState("all");
-  const [settings, setSettings] = useState({ sheetUrl: "" });
   const [syncStatus, setSyncStatus] = useState(null); // null | 'syncing' | 'ok' | 'error'
   const [mesRef, setMesRef] = useState(() => {
     const d = new Date();
@@ -441,7 +386,6 @@ export default function App() {
 
   useEffect(() => {
     setRecords(loadRecords());
-    setSettings(loadSettings());
   }, []);
 
   function save(recs) {
@@ -452,20 +396,16 @@ export default function App() {
   function addRecord(r) {
     save([...records, r]);
     setView("list");
-    if (settings.sheetUrl) {
-      setSyncStatus("syncing");
-      syncToSheet(r, settings.sheetUrl).then(res => setSyncStatus(res.ok ? "ok" : "error"));
-    }
+    setSyncStatus("syncing");
+    syncToSheet(r).then(res => setSyncStatus(res.ok ? "ok" : "error"));
   }
 
   function updateRecord(r) {
     save(records.map(x => x.id === r.id ? r : x));
     setView("list");
     setEditRec(null);
-    if (settings.sheetUrl) {
-      setSyncStatus("syncing");
-      syncToSheet(r, settings.sheetUrl).then(res => setSyncStatus(res.ok ? "ok" : "error"));
-    }
+    setSyncStatus("syncing");
+    syncToSheet(r).then(res => setSyncStatus(res.ok ? "ok" : "error"));
   }
 
   function deleteRecord(id) {
@@ -486,19 +426,10 @@ export default function App() {
       {/* Header */}
       <div className="bg-blue-700 text-white pt-10 pb-6 px-4">
         <div className="max-w-lg mx-auto">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-blue-200 text-xs mb-0.5">Relatório de Quilometragem</p>
-              <h1 className="text-xl font-bold leading-tight">Felipe Torquato</h1>
-              <p className="text-blue-300 text-xs mt-0.5">{SETOR} · R$ {RATE_PER_KM.toFixed(2)}/km</p>
-            </div>
-            <button
-              onClick={() => setView("settings")}
-              className="text-blue-200 hover:text-white text-xl px-1 pt-1"
-              aria-label="Configurações"
-            >
-              ⚙
-            </button>
+          <div>
+            <p className="text-blue-200 text-xs mb-0.5">Relatório de Quilometragem</p>
+            <h1 className="text-xl font-bold leading-tight">Felipe Torquato</h1>
+            <p className="text-blue-300 text-xs mt-0.5">{SETOR} · R$ {RATE_PER_KM.toFixed(2)}/km</p>
           </div>
 
           {syncStatus && (
@@ -530,7 +461,7 @@ export default function App() {
         {view === "new" && (
           <Card className="p-5 mt-4">
             <h2 className="font-semibold text-gray-800 mb-4">Novo registro</h2>
-            <EntryForm onSave={addRecord} onCancel={() => setView("list")} sheetUrl={settings.sheetUrl} />
+            <EntryForm onSave={addRecord} onCancel={() => setView("list")} />
           </Card>
         )}
 
@@ -541,17 +472,8 @@ export default function App() {
               initial={editRec}
               onSave={updateRecord}
               onCancel={() => { setView("list"); setEditRec(null); }}
-              sheetUrl={settings.sheetUrl}
             />
           </Card>
-        )}
-
-        {view === "settings" && (
-          <SettingsPanel
-            settings={settings}
-            onSave={s => { saveSettings(s); setSettings(s); setView("list"); }}
-            onCancel={() => setView("list")}
-          />
         )}
 
         {view === "export" && (
