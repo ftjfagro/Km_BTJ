@@ -38,6 +38,8 @@ function monthLabel(iso) {
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 const KEY = "km_registros_v2";
+const OPENAI_KEY_STORAGE = "km_openai_key";
+const SHEET_URL_STORAGE = "km_sheet_url";
 
 function loadRecords() {
   try {
@@ -52,34 +54,78 @@ function saveRecords(recs) {
   localStorage.setItem(KEY, JSON.stringify(recs));
 }
 
+function loadSettings() {
+  return {
+    openaiKey: localStorage.getItem(OPENAI_KEY_STORAGE) || "",
+    sheetUrl: localStorage.getItem(SHEET_URL_STORAGE) || "",
+  };
+}
+
+function saveSettings({ openaiKey, sheetUrl }) {
+  localStorage.setItem(OPENAI_KEY_STORAGE, openaiKey || "");
+  localStorage.setItem(SHEET_URL_STORAGE, sheetUrl || "");
+}
+
 // ─── OCR / AI helpers ─────────────────────────────────────────────────────────
-async function extractOdometerFromImage(base64) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+async function extractOdometerFromImage(base64, apiKey) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+      model: "gpt-4o-mini",
+      max_tokens: 50,
       messages: [{
         role: "user",
         content: [
           {
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: base64 }
-          },
-          {
             type: "text",
             text: "Esta é a foto do painel de um carro. Leia o odômetro (quilometragem total - ODO em km). Responda SOMENTE com o número inteiro, sem texto, sem unidade, sem pontuação. Ex: 230548"
+          },
+          {
+            type: "image_url",
+            image_url: { url: `data:image/jpeg;base64,${base64}` }
           }
         ]
       }]
     })
   });
   const data = await res.json();
-  const text = data.content?.[0]?.text?.trim() ?? "";
+  if (data.error) throw new Error(data.error.message || "Erro na API da OpenAI");
+  const text = data.choices?.[0]?.message?.content?.trim() ?? "";
   const match = text.match(/\d[\d.]*\d|\d+/);
   if (match) return parseInt(match[0].replace(/\./g, ""), 10);
   return null;
+}
+
+// ─── Google Sheets sync ───────────────────────────────────────────────────────
+async function syncToSheet(record, sheetUrl) {
+  if (!sheetUrl) return { ok: false, skipped: true };
+  try {
+    await fetch(sheetUrl, {
+      method: "POST",
+      mode: "no-cors", // Apps Script não retorna CORS headers; gravação ocorre mesmo assim
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        data: record.data,
+        tipo: "Viagem",
+        origem: record.origem,
+        destino: record.destino,
+        kmInicial: record.kmInicial,
+        kmFinal: record.kmFinal,
+        categoria: "",
+        descricao: "",
+        valor: "",
+        observacao: "Lançado via app Km_BTJ",
+      }),
+    });
+    // com mode:"no-cors" não dá pra ler a resposta, então assumimos sucesso se não deu exceção
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
 }
 
 // ─── Excel export ─────────────────────────────────────────────────────────────
@@ -163,7 +209,7 @@ function Card({ children, className = "" }) {
 }
 
 // ─── New Entry Form ────────────────────────────────────────────────────────────
-function EntryForm({ onSave, onCancel, initial = null }) {
+function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
   const [data, setData] = useState(initial?.data ?? todayISO());
   const [origem, setOrigem] = useState(initial?.origem ?? "Sud");
   const [origemCustom, setOrigemCustom] = useState("");
@@ -178,6 +224,10 @@ function EntryForm({ onSave, onCancel, initial = null }) {
   const total = kmRodado * RATE_PER_KM;
 
   async function handlePhoto(phase, file) {
+    if (!openaiKey) {
+      alert("Configure sua chave da OpenAI em Configurações (⚙) antes de usar a leitura por foto.");
+      return;
+    }
     setLoading(true);
     try {
       const b64 = await new Promise((res, rej) => {
@@ -186,7 +236,7 @@ function EntryForm({ onSave, onCancel, initial = null }) {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      const km = await extractOdometerFromImage(b64);
+      const km = await extractOdometerFromImage(b64, openaiKey);
       if (km) {
         if (phase === "inicial") setKmInicial(String(km));
         else setKmFinal(String(km));
@@ -194,7 +244,7 @@ function EntryForm({ onSave, onCancel, initial = null }) {
         alert("Não consegui ler o odômetro. Por favor, insira manualmente.");
       }
     } catch (e) {
-      alert("Erro ao processar a imagem.");
+      alert("Erro ao processar a imagem: " + (e.message || "tente novamente."));
     }
     setLoading(false);
     setImgPhase(null);
@@ -358,18 +408,88 @@ function EntryForm({ onSave, onCancel, initial = null }) {
   );
 }
 
+// ─── Settings Panel ─────────────────────────────────────────────────────────
+function SettingsPanel({ settings, onSave, onCancel }) {
+  const [openaiKey, setOpenaiKey] = useState(settings.openaiKey || "");
+  const [sheetUrl, setSheetUrl] = useState(settings.sheetUrl || "");
+  const [showKey, setShowKey] = useState(false);
+
+  return (
+    <Card className="p-5 mt-4">
+      <h2 className="font-semibold text-gray-800 mb-1">Configurações</h2>
+      <p className="text-xs text-gray-400 mb-4">Salvo só neste navegador. Nunca vai pro GitHub.</p>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Chave da API OpenAI</label>
+          <div className="flex gap-2">
+            <input
+              type={showKey ? "text" : "password"}
+              placeholder="sk-..."
+              value={openaiKey}
+              onChange={e => setOpenaiKey(e.target.value)}
+              className="flex-1 rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => setShowKey(s => !s)}
+              className="px-3 rounded-xl border border-gray-200 text-sm text-gray-500"
+              type="button"
+            >
+              {showKey ? "🙈" : "👁"}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            Usada para ler o odômetro nas fotos (gpt-4o-mini). Crie uma chave separada com limite de gasto em platform.openai.com.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">URL do Apps Script (planilha)</label>
+          <input
+            type="text"
+            placeholder="https://script.google.com/macros/s/.../exec"
+            value={sheetUrl}
+            onChange={e => setSheetUrl(e.target.value)}
+            className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-xs text-gray-400 mt-1">
+            URL gerada ao publicar o Web App do Apps Script na sua planilha. Deixe em branco para não sincronizar.
+          </p>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-5">
+        <button
+          onClick={() => onSave({ openaiKey: openaiKey.trim(), sheetUrl: sheetUrl.trim() })}
+          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl text-sm transition"
+        >
+          Salvar
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-4 py-2.5 rounded-xl text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 transition"
+        >
+          Cancelar
+        </button>
+      </div>
+    </Card>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [records, setRecords] = useState([]);
-  const [view, setView] = useState("list"); // list | new | edit | export
+  const [view, setView] = useState("list"); // list | new | edit | export | settings
   const [editRec, setEditRec] = useState(null);
   const [filterMonth, setFilterMonth] = useState("all");
+  const [settings, setSettings] = useState({ openaiKey: "", sheetUrl: "" });
+  const [syncStatus, setSyncStatus] = useState(null); // null | 'syncing' | 'ok' | 'error'
   const [mesRef, setMesRef] = useState(() => {
     const d = new Date();
     return `${MONTHS_PT[d.getMonth()]} ${d.getFullYear()}`;
   });
 
-  useEffect(() => { setRecords(loadRecords()); }, []);
+  useEffect(() => {
+    setRecords(loadRecords());
+    setSettings(loadSettings());
+  }, []);
 
   function save(recs) {
     setRecords(recs);
@@ -379,12 +499,20 @@ export default function App() {
   function addRecord(r) {
     save([...records, r]);
     setView("list");
+    if (settings.sheetUrl) {
+      setSyncStatus("syncing");
+      syncToSheet(r, settings.sheetUrl).then(res => setSyncStatus(res.ok ? "ok" : "error"));
+    }
   }
 
   function updateRecord(r) {
     save(records.map(x => x.id === r.id ? r : x));
     setView("list");
     setEditRec(null);
+    if (settings.sheetUrl) {
+      setSyncStatus("syncing");
+      syncToSheet(r, settings.sheetUrl).then(res => setSyncStatus(res.ok ? "ok" : "error"));
+    }
   }
 
   function deleteRecord(id) {
@@ -405,9 +533,28 @@ export default function App() {
       {/* Header */}
       <div className="bg-blue-700 text-white pt-10 pb-6 px-4">
         <div className="max-w-lg mx-auto">
-          <p className="text-blue-200 text-xs mb-0.5">Relatório de Quilometragem</p>
-          <h1 className="text-xl font-bold leading-tight">Felipe Torquato</h1>
-          <p className="text-blue-300 text-xs mt-0.5">{SETOR} · R$ {RATE_PER_KM.toFixed(2)}/km</p>
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-blue-200 text-xs mb-0.5">Relatório de Quilometragem</p>
+              <h1 className="text-xl font-bold leading-tight">Felipe Torquato</h1>
+              <p className="text-blue-300 text-xs mt-0.5">{SETOR} · R$ {RATE_PER_KM.toFixed(2)}/km</p>
+            </div>
+            <button
+              onClick={() => setView("settings")}
+              className="text-blue-200 hover:text-white text-xl px-1 pt-1"
+              aria-label="Configurações"
+            >
+              ⚙
+            </button>
+          </div>
+
+          {syncStatus && (
+            <p className={`text-xs mt-1 ${syncStatus === "error" ? "text-red-300" : "text-blue-300"}`}>
+              {syncStatus === "syncing" && "☁ sincronizando com a planilha..."}
+              {syncStatus === "ok" && "☁ sincronizado com a planilha"}
+              {syncStatus === "error" && "⚠ falha ao sincronizar (registro salvo localmente)"}
+            </p>
+          )}
 
           {/* Summary */}
           <div className="mt-4 grid grid-cols-2 gap-3">
@@ -430,7 +577,7 @@ export default function App() {
         {view === "new" && (
           <Card className="p-5 mt-4">
             <h2 className="font-semibold text-gray-800 mb-4">Novo registro</h2>
-            <EntryForm onSave={addRecord} onCancel={() => setView("list")} />
+            <EntryForm onSave={addRecord} onCancel={() => setView("list")} openaiKey={settings.openaiKey} />
           </Card>
         )}
 
@@ -441,8 +588,17 @@ export default function App() {
               initial={editRec}
               onSave={updateRecord}
               onCancel={() => { setView("list"); setEditRec(null); }}
+              openaiKey={settings.openaiKey}
             />
           </Card>
+        )}
+
+        {view === "settings" && (
+          <SettingsPanel
+            settings={settings}
+            onSave={s => { saveSettings(s); setSettings(s); setView("list"); }}
+            onCancel={() => setView("list")}
+          />
         )}
 
         {view === "export" && (
@@ -587,3 +743,4 @@ export default function App() {
     </div>
   );
 }
+
