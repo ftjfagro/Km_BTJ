@@ -341,7 +341,6 @@ function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               className="hidden"
               onChange={e => { if (e.target.files[0]) { setImgPhase("inicial"); handlePhoto("inicial", e.target.files[0]); } }}
             />
@@ -369,7 +368,6 @@ function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               className="hidden"
               onChange={e => { if (e.target.files[0]) { setImgPhase("final"); handlePhoto("final", e.target.files[0]); } }}
             />
