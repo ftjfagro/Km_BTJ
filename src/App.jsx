@@ -38,7 +38,6 @@ function monthLabel(iso) {
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 const KEY = "km_registros_v2";
-const OPENAI_KEY_STORAGE = "km_openai_key";
 const SHEET_URL_STORAGE = "km_sheet_url";
 
 function loadRecords() {
@@ -56,48 +55,27 @@ function saveRecords(recs) {
 
 function loadSettings() {
   return {
-    openaiKey: localStorage.getItem(OPENAI_KEY_STORAGE) || "",
     sheetUrl: localStorage.getItem(SHEET_URL_STORAGE) || "",
   };
 }
 
-function saveSettings({ openaiKey, sheetUrl }) {
-  localStorage.setItem(OPENAI_KEY_STORAGE, openaiKey || "");
+function saveSettings({ sheetUrl }) {
   localStorage.setItem(SHEET_URL_STORAGE, sheetUrl || "");
 }
 
 // ─── OCR / AI helpers ─────────────────────────────────────────────────────────
-async function extractOdometerFromImage(base64, apiKey) {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+// A leitura do odômetro roda no Apps Script (que guarda a chave da OpenAI),
+// não no navegador — assim nenhum aparelho precisa da chave.
+async function extractOdometerFromImage(base64, sheetUrl) {
+  if (!sheetUrl) throw new Error("Configure a URL do Apps Script em Configurações antes de usar a leitura por foto.");
+  const res = await fetch(sheetUrl, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      max_tokens: 50,
-      messages: [{
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: "Esta é a foto do painel de um carro. Leia o odômetro (quilometragem total - ODO em km). Responda SOMENTE com o número inteiro, sem texto, sem unidade, sem pontuação. Ex: 230548"
-          },
-          {
-            type: "image_url",
-            image_url: { url: `data:image/jpeg;base64,${base64}` }
-          }
-        ]
-      }]
-    })
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "ocr", image: base64 }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || "Erro na API da OpenAI");
-  const text = data.choices?.[0]?.message?.content?.trim() ?? "";
-  const match = text.match(/\d[\d.]*\d|\d+/);
-  if (match) return parseInt(match[0].replace(/\./g, ""), 10);
-  return null;
+  if (!data.ok) throw new Error(data.error || "Erro ao ler o odômetro.");
+  return data.km ?? null;
 }
 
 // ─── Google Sheets sync ───────────────────────────────────────────────────────
@@ -209,7 +187,7 @@ function Card({ children, className = "" }) {
 }
 
 // ─── New Entry Form ────────────────────────────────────────────────────────────
-function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
+function EntryForm({ onSave, onCancel, initial = null, sheetUrl }) {
   const [data, setData] = useState(initial?.data ?? todayISO());
   const [origem, setOrigem] = useState(initial?.origem ?? "Sud");
   const [origemCustom, setOrigemCustom] = useState("");
@@ -224,8 +202,8 @@ function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
   const total = kmRodado * RATE_PER_KM;
 
   async function handlePhoto(phase, file) {
-    if (!openaiKey) {
-      alert("Configure sua chave da OpenAI em Configurações (⚙) antes de usar a leitura por foto.");
+    if (!sheetUrl) {
+      alert("Configure a URL do Apps Script em Configurações (⚙) antes de usar a leitura por foto.");
       return;
     }
     setLoading(true);
@@ -236,7 +214,7 @@ function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      const km = await extractOdometerFromImage(b64, openaiKey);
+      const km = await extractOdometerFromImage(b64, sheetUrl);
       if (km) {
         if (phase === "inicial") setKmInicial(String(km));
         else setKmFinal(String(km));
@@ -408,37 +386,13 @@ function EntryForm({ onSave, onCancel, initial = null, openaiKey }) {
 
 // ─── Settings Panel ─────────────────────────────────────────────────────────
 function SettingsPanel({ settings, onSave, onCancel }) {
-  const [openaiKey, setOpenaiKey] = useState(settings.openaiKey || "");
   const [sheetUrl, setSheetUrl] = useState(settings.sheetUrl || "");
-  const [showKey, setShowKey] = useState(false);
 
   return (
     <Card className="p-5 mt-4">
       <h2 className="font-semibold text-gray-800 mb-1">Configurações</h2>
       <p className="text-xs text-gray-400 mb-4">Salvo só neste navegador. Nunca vai pro GitHub.</p>
       <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Chave da API OpenAI</label>
-          <div className="flex gap-2">
-            <input
-              type={showKey ? "text" : "password"}
-              placeholder="sk-..."
-              value={openaiKey}
-              onChange={e => setOpenaiKey(e.target.value)}
-              className="flex-1 rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              onClick={() => setShowKey(s => !s)}
-              className="px-3 rounded-xl border border-gray-200 text-sm text-gray-500"
-              type="button"
-            >
-              {showKey ? "🙈" : "👁"}
-            </button>
-          </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Usada para ler o odômetro nas fotos (gpt-4o-mini). Crie uma chave separada com limite de gasto em platform.openai.com.
-          </p>
-        </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">URL do Apps Script (planilha)</label>
           <input
@@ -449,13 +403,14 @@ function SettingsPanel({ settings, onSave, onCancel }) {
             className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <p className="text-xs text-gray-400 mt-1">
-            URL gerada ao publicar o Web App do Apps Script na sua planilha. Deixe em branco para não sincronizar.
+            URL gerada ao publicar o Web App do Apps Script na sua planilha. Usada tanto para gravar os lançamentos
+            quanto para ler o odômetro nas fotos — a chave da OpenAI mora no próprio Apps Script, não aqui.
           </p>
         </div>
       </div>
       <div className="flex gap-2 mt-5">
         <button
-          onClick={() => onSave({ openaiKey: openaiKey.trim(), sheetUrl: sheetUrl.trim() })}
+          onClick={() => onSave({ sheetUrl: sheetUrl.trim() })}
           className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl text-sm transition"
         >
           Salvar
@@ -477,7 +432,7 @@ export default function App() {
   const [view, setView] = useState("list"); // list | new | edit | export | settings
   const [editRec, setEditRec] = useState(null);
   const [filterMonth, setFilterMonth] = useState("all");
-  const [settings, setSettings] = useState({ openaiKey: "", sheetUrl: "" });
+  const [settings, setSettings] = useState({ sheetUrl: "" });
   const [syncStatus, setSyncStatus] = useState(null); // null | 'syncing' | 'ok' | 'error'
   const [mesRef, setMesRef] = useState(() => {
     const d = new Date();
@@ -575,7 +530,7 @@ export default function App() {
         {view === "new" && (
           <Card className="p-5 mt-4">
             <h2 className="font-semibold text-gray-800 mb-4">Novo registro</h2>
-            <EntryForm onSave={addRecord} onCancel={() => setView("list")} openaiKey={settings.openaiKey} />
+            <EntryForm onSave={addRecord} onCancel={() => setView("list")} sheetUrl={settings.sheetUrl} />
           </Card>
         )}
 
@@ -586,7 +541,7 @@ export default function App() {
               initial={editRec}
               onSave={updateRecord}
               onCancel={() => { setView("list"); setEditRec(null); }}
-              openaiKey={settings.openaiKey}
+              sheetUrl={settings.sheetUrl}
             />
           </Card>
         )}
