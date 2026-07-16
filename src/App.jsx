@@ -15,11 +15,13 @@ const BTJ_LIGHT = "#A1D6DC";
 // Fallback caso a config da planilha não carregue (offline no primeiro uso)
 const DEFAULT_CONFIG = {
   destinos: ["Sud", "Ilha", "RP", "SP", "Campinas", "Jundiaí", "Ribeirão", "VCP", "Foods", "Sud Foods", "Foods RP", "Foods Prudente", "Prudente"],
+  carros: ["Corolla FSZ8B48", "Outlander FXJ5336"],
   taxas: [
     { colaborador: SOLICITANTE, taxa: 1.12, vigenteDesde: "2026-01-01" },
     { colaborador: "Geral", taxa: 0.88, vigenteDesde: "2026-01-01" },
   ],
 };
+const CARRO_PADRAO = "Corolla FSZ8B48";
 
 // GPS: município oficial → apelido usado na planilha
 const CITY_GPS_MAP = {
@@ -83,6 +85,14 @@ function taxaVigente(taxas, colaborador, isoDate) {
 const KEY_RECORDS = "km_registros_v3";
 const KEY_RECORDS_OLD = "km_registros_v2";
 const KEY_CONFIG = "km_config_cache";
+const KEY_LAST_CAR = "km_ultimo_carro";
+
+function loadLastCar() {
+  return localStorage.getItem(KEY_LAST_CAR) || CARRO_PADRAO;
+}
+function saveLastCar(c) {
+  localStorage.setItem(KEY_LAST_CAR, c);
+}
 const KEY_PHOTO_QUEUE = "km_fotos_pendentes";
 
 function loadRecords() {
@@ -165,6 +175,7 @@ async function apiSave(record) {
       kmFinal: record.kmFinal ?? "",
       observacao: record.observacao || "",
       colaborador: SOLICITANTE,
+      carro: record.carro || CARRO_PADRAO,
     }),
   });
   const data = await res.json();
@@ -256,11 +267,13 @@ function exportToExcel(records, mesLabel, taxas) {
   XLSX.writeFile(wb, `Relatorio_KM_${mesLabel.replace(/\s/g, "_")}.xlsx`);
 }
 
-// ─── Coerência do odômetro (contra dia anterior e seguinte) ───────────────────
+// ─── Coerência do odômetro (contra dia anterior e seguinte, MESMO carro) ──────
 // Retorna { field, msg } se houver conflito, ou null se estiver ok.
-// records: lista atual; dateISO: dia sendo salvo; kmIni/kmFin: valores propostos.
-function checkCoherence(records, dateISO, kmIni, kmFin, ignoreId) {
-  const others = records.filter(r => r.data !== dateISO && r.id !== ignoreId);
+function checkCoherence(records, dateISO, kmIni, kmFin, ignoreId, carro) {
+  const carroRef = carro || CARRO_PADRAO;
+  const others = records.filter(r =>
+    r.data !== dateISO && r.id !== ignoreId && (r.carro || CARRO_PADRAO) === carroRef
+  );
 
   const prev = others
     .filter(r => r.data < dateISO && r.kmFinal != null)
@@ -273,24 +286,21 @@ function checkCoherence(records, dateISO, kmIni, kmFin, ignoreId) {
     .filter(r => r.data > dateISO && r.kmInicial != null)
     .sort((a, b) => a.data.localeCompare(b.data))[0];
 
-  // KM inicial não pode ser menor que a última leitura anterior conhecida
   if (kmIni != null) {
     const ref = prev ? { v: prev.kmFinal, label: "KM final", d: prev.data }
       : prevIniOnly ? { v: prevIniOnly.kmInicial, label: "KM inicial", d: prevIniOnly.data }
       : null;
     if (ref && kmIni < ref.v) {
-      return { field: "ini", msg: `KM inicial (${kmIni.toLocaleString("pt-BR")}) é menor que o ${ref.label} de ${formatDateBR(ref.d)} (${ref.v.toLocaleString("pt-BR")}). O odômetro não anda pra trás — confira o valor.` };
+      return { field: "ini", msg: `KM inicial (${kmIni.toLocaleString("pt-BR")}) é menor que o ${ref.label} de ${formatDateBR(ref.d)} (${ref.v.toLocaleString("pt-BR")}) neste carro. O odômetro não anda pra trás — confira o valor.` };
     }
   }
 
-  // KM final não pode ser maior que a primeira leitura do dia seguinte
   if (kmFin != null && next) {
     if (kmFin > next.kmInicial) {
-      return { field: "fin", msg: `KM final (${kmFin.toLocaleString("pt-BR")}) é maior que o KM inicial de ${formatDateBR(next.data)} (${next.kmInicial.toLocaleString("pt-BR")}). Confira o valor.` };
+      return { field: "fin", msg: `KM final (${kmFin.toLocaleString("pt-BR")}) é maior que o KM inicial de ${formatDateBR(next.data)} (${next.kmInicial.toLocaleString("pt-BR")}) neste carro. Confira o valor.` };
     }
   }
 
-  // Dentro do próprio dia
   if (kmIni != null && kmFin != null && kmFin < kmIni) {
     return { field: "fin", msg: `KM final (${kmFin.toLocaleString("pt-BR")}) menor que o inicial (${kmIni.toLocaleString("pt-BR")}).` };
   }
@@ -310,16 +320,23 @@ function monthSummary(records, key, taxas) {
   const recs = records.filter(r => monthKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
   const receber = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, SOLICITANTE, r.data), 0);
-  const odos = [];
-  recs.forEach(r => {
-    if (r.kmInicial != null) odos.push({ d: r.data + "A", v: r.kmInicial });
-    if (r.kmFinal != null) odos.push({ d: r.data + "B", v: r.kmFinal });
-  });
-  odos.sort((a, b) => a.d.localeCompare(b.d));
+
+  // KM pessoal é por carro (odômetros diferentes) e depois somado.
+  const carros = [...new Set(recs.map(r => r.carro || CARRO_PADRAO))];
   let pessoal = null;
-  if (odos.length >= 2) {
-    const span = odos[odos.length - 1].v - odos[0].v;
-    pessoal = Math.max(0, span - trabalho);
+  for (const c of carros) {
+    const recsC = recs.filter(r => (r.carro || CARRO_PADRAO) === c);
+    const odos = [];
+    recsC.forEach(r => {
+      if (r.kmInicial != null) odos.push({ d: r.data + "A", v: r.kmInicial });
+      if (r.kmFinal != null) odos.push({ d: r.data + "B", v: r.kmFinal });
+    });
+    odos.sort((a, b) => a.d.localeCompare(b.d));
+    if (odos.length >= 2) {
+      const span = odos[odos.length - 1].v - odos[0].v;
+      const trabC = recsC.reduce((s, r) => s + kmOf(r), 0);
+      pessoal = (pessoal || 0) + Math.max(0, span - trabC);
+    }
   }
   return { recs, trabalho, receber, pessoal, viagens: recs.filter(r => kmOf(r) > 0).length };
 }
@@ -391,6 +408,7 @@ export default function App() {
   // Formulário (apontamento do dia)
   const [editingId, setEditingId] = useState(null);
   const [fData, setFData] = useState(todayISO());
+  const [fCarro, setFCarro] = useState(loadLastCar());
   const [fOrigem, setFOrigem] = useState("");
   const [fOrigemGps, setFOrigemGps] = useState(false);
   const [fDestino, setFDestino] = useState("");
@@ -429,21 +447,23 @@ export default function App() {
     if (!navigator.onLine) return;
     try {
       setSyncStatus("syncing");
-      const remote = await apiList(); // [{data, origem, destino, kmInicial, kmFinal, observacao, taxa}]
+      const remote = await apiList();
       const local = loadRecords();
       const pendentes = local.filter(r => r.synced === false);
-      const pendById = new Map(pendentes.map(r => [r.data, r]));
+      const keyOf = r => `${r.data}|${r.carro || CARRO_PADRAO}`;
+      const pendByKey = new Map(pendentes.map(r => [keyOf(r), r]));
 
       const merged = [];
-      // Começa da planilha; se o dia tem pendência local, a pendência vence
       for (const rem of remote) {
-        if (pendById.has(rem.data)) {
-          merged.push(pendById.get(rem.data));
-          pendById.delete(rem.data);
+        const k = `${rem.data}|${rem.carro || CARRO_PADRAO}`;
+        if (pendByKey.has(k)) {
+          merged.push(pendByKey.get(k));
+          pendByKey.delete(k);
         } else {
           merged.push({
-            id: `sheet-${rem.data}`,
+            id: `sheet-${k}`,
             data: rem.data,
+            carro: rem.carro || CARRO_PADRAO,
             origem: rem.origem,
             destino: rem.destino,
             kmInicial: rem.kmInicial,
@@ -453,8 +473,7 @@ export default function App() {
           });
         }
       }
-      // Pendências que não existiam na planilha (dias novos offline)
-      for (const p of pendById.values()) merged.push(p);
+      for (const p of pendByKey.values()) merged.push(p);
 
       merged.sort((a, b) => a.data.localeCompare(b.data));
       setRecords(merged);
@@ -467,9 +486,9 @@ export default function App() {
     }
   }
 
-  // ── Carrega o registro do dia selecionado no formulário ──
+  // ── Carrega o registro do dia+carro selecionado no formulário ──
   useEffect(() => {
-    const rec = records.find(r => r.data === fData && r.id !== undefined);
+    const rec = records.find(r => r.data === fData && (r.carro || CARRO_PADRAO) === fCarro);
     if (rec && rec.id !== editingId) {
       setEditingId(rec.id);
       setFOrigem(rec.origem || "");
@@ -484,14 +503,14 @@ export default function App() {
       setFOrigemGps(false);
     }
     const q = loadPhotoQueue();
-    setQueuedIni(q.some(p => p.date === fData && p.phase === "inicial"));
-    setQueuedFin(q.some(p => p.date === fData && p.phase === "final"));
-  }, [fData, records]);
+    setQueuedIni(q.some(p => p.date === fData && p.carro === fCarro && p.phase === "inicial"));
+    setQueuedFin(q.some(p => p.date === fData && p.carro === fCarro && p.phase === "final"));
+  }, [fData, fCarro, records]);
 
-  // ── Coerência em tempo real ──
+  // ── Coerência em tempo real (por carro) ──
   useEffect(() => {
-    setCoherErr(checkCoherence(records, fData, fKmIni, fKmFin, editingId));
-  }, [fKmIni, fKmFin, fData, records, editingId]);
+    setCoherErr(checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro));
+  }, [fKmIni, fKmFin, fData, fCarro, records, editingId]);
 
   // ── GPS: preenche origem ao abrir (se vazia) ──
   useEffect(() => {
@@ -515,13 +534,13 @@ export default function App() {
     for (const item of [...q]) {
       try {
         const km = await apiOcr(item.b64);
-        applyKmToDate(item.date, item.phase, km);
-        q = q.filter(p => !(p.date === item.date && p.phase === item.phase));
+        applyKmToDate(item.date, item.carro || CARRO_PADRAO, item.phase, km);
+        q = q.filter(p => !(p.date === item.date && (p.carro || CARRO_PADRAO) === (item.carro || CARRO_PADRAO) && p.phase === item.phase));
         persistPhotoQueue(q);
       } catch { /* tenta de novo na próxima conexão */ }
     }
-    setQueuedIni(q.some(p => p.date === fData && p.phase === "inicial"));
-    setQueuedFin(q.some(p => p.date === fData && p.phase === "final"));
+    setQueuedIni(q.some(p => p.date === fData && (p.carro || CARRO_PADRAO) === fCarro && p.phase === "inicial"));
+    setQueuedFin(q.some(p => p.date === fData && (p.carro || CARRO_PADRAO) === fCarro && p.phase === "final"));
     setSyncStatus("ok");
   }
 
@@ -529,8 +548,8 @@ export default function App() {
     const pending = loadRecords().filter(r => r.synced === false);
     for (const r of pending) {
       try {
-        const res = await apiSave(r);
-        mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true} : x));
+        await apiSave(r);
+        mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
       } catch { /* fica pra próxima */ }
     }
   }
@@ -543,29 +562,29 @@ export default function App() {
     });
   }
 
-  function applyKmToDate(dateISO, phase, km) {
+  function applyKmToDate(dateISO, carro, phase, km) {
     if (km == null) return;
     mutateRecords(recs => {
-      const idx = recs.findIndex(r => r.data === dateISO);
+      const idx = recs.findIndex(r => r.data === dateISO && (r.carro || CARRO_PADRAO) === carro);
       if (idx === -1) return recs;
       const upd = { ...recs[idx], [phase === "inicial" ? "kmInicial" : "kmFinal"]: km, synced: false };
       const next = [...recs];
       next[idx] = upd;
       return next;
     });
-    if (dateISO === fData) {
+    if (dateISO === fData && carro === fCarro) {
       if (phase === "inicial") setFKmIni(km); else setFKmFin(km);
     }
-    syncRecordByDate(dateISO);
+    syncRecordByKey(dateISO, carro);
   }
 
-  async function syncRecordByDate(dateISO) {
-    const r = loadRecords().find(x => x.data === dateISO);
+  async function syncRecordByKey(dateISO, carro) {
+    const r = loadRecords().find(x => x.data === dateISO && (x.carro || CARRO_PADRAO) === carro);
     if (!r) return;
     try {
       setSyncStatus("syncing");
-      const res = await apiSave(r);
-      mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true} : x));
+      await apiSave(r);
+      mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -580,8 +599,8 @@ export default function App() {
     try {
       const b64 = await fileToResizedBase64(file);
       if (!navigator.onLine) {
-        const q = loadPhotoQueue().filter(p => !(p.date === fData && p.phase === phase));
-        q.push({ date: fData, phase, b64, ts: Date.now() });
+        const q = loadPhotoQueue().filter(p => !(p.date === fData && (p.carro || CARRO_PADRAO) === fCarro && p.phase === phase));
+        q.push({ date: fData, carro: fCarro, phase, b64, ts: Date.now() });
         persistPhotoQueue(q);
         if (phase === "inicial") setQueuedIni(true); else setQueuedFin(true);
         alert("Sem internet agora. A foto ficou guardada e será lida automaticamente quando a conexão voltar.");
@@ -605,26 +624,24 @@ export default function App() {
     }
   }
 
-  // ── KM emendado: foto inicial de hoje pode fechar o dia aberto anterior ──
+  // ── KM emendado: foto inicial de hoje pode fechar o dia aberto anterior (MESMO carro) ──
   function offerBridge(km) {
     const open = records
-      .filter(r => r.data < fData && r.kmInicial != null && r.kmFinal == null)
+      .filter(r => r.data < fData && (r.carro || CARRO_PADRAO) === fCarro && r.kmInicial != null && r.kmFinal == null)
       .sort((a, b) => b.data.localeCompare(a.data))[0];
     if (!open) return;
-    // Só sugere se o valor for coerente como final daquele dia (>= inicial dele,
-    // e <= inicial do dia seguinte a ele, se houver).
-    const err = checkCoherence(records, open.data, open.kmInicial, km, open.id);
+    const err = checkCoherence(records, open.data, open.kmInicial, km, open.id, fCarro);
     if (err) return;
     const ok = confirm(
-      `O dia ${formatDateBR(open.data)} está sem KM final.\n` +
+      `O dia ${formatDateBR(open.data)} está sem KM final (${fCarro}).\n` +
       `Como o carro ficou parado, usar esta leitura (${km.toLocaleString("pt-BR")}) como o KM final daquele dia?`
     );
-    if (ok) applyKmToDate(open.data, "final", km);
+    if (ok) applyKmToDate(open.data, fCarro, "final", km);
   }
 
-  // ── Reaproveitar KM final de ontem como inicial de hoje ──
+  // ── Reaproveitar KM final do último dia (MESMO carro) como inicial de hoje ──
   const prevClosed = records
-    .filter(r => r.data < fData && r.kmFinal != null)
+    .filter(r => r.data < fData && (r.carro || CARRO_PADRAO) === fCarro && r.kmFinal != null)
     .sort((a, b) => b.data.localeCompare(a.data))[0];
   const showReuse = prevClosed && fKmIni == null;
 
@@ -634,16 +651,18 @@ export default function App() {
       alert("Preencha ao menos um KM, destino ou observação.");
       return;
     }
-    const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId);
+    const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro);
     if (err) {
       setCoherErr(err);
       alert("⛔ " + err.msg);
       return;
     }
-    const existing = records.find(r => r.data === fData);
+    saveLastCar(fCarro);
+    const existing = records.find(r => r.data === fData && (r.carro || CARRO_PADRAO) === fCarro);
     const rec = {
       id: existing?.id ?? editingId ?? Date.now(),
       data: fData,
+      carro: fCarro,
       origem: fOrigem,
       destino: fDestino,
       kmInicial: fKmIni,
@@ -652,11 +671,11 @@ export default function App() {
       synced: false,
     };
     mutateRecords(recs => {
-      const exists = recs.some(r => r.data === rec.data);
-      return exists ? recs.map(r => r.data === rec.data ? rec : r) : [...recs, rec];
+      const exists = recs.some(r => r.data === rec.data && (r.carro || CARRO_PADRAO) === fCarro);
+      return exists ? recs.map(r => (r.data === rec.data && (r.carro || CARRO_PADRAO) === fCarro) ? rec : r) : [...recs, rec];
     });
     setEditingId(rec.id);
-    syncRecordByDate(fData);
+    syncRecordByKey(fData, fCarro);
   }
 
   // ── Derivados ──
@@ -679,19 +698,19 @@ export default function App() {
     setInlineEdit(prev => {
       const next = { ...prev, ...patch };
       const rec = records.find(r => r.id === next.id);
-      next.err = rec ? checkCoherence(records, rec.data, next.kmIni, next.kmFin, next.id) : null;
+      next.err = rec ? checkCoherence(records, rec.data, next.kmIni, next.kmFin, next.id, rec.carro || CARRO_PADRAO) : null;
       return next;
     });
   }
   function saveInline() {
     const rec = records.find(r => r.id === inlineEdit.id);
     if (!rec) return;
-    const err = checkCoherence(records, rec.data, inlineEdit.kmIni, inlineEdit.kmFin, inlineEdit.id);
+    const err = checkCoherence(records, rec.data, inlineEdit.kmIni, inlineEdit.kmFin, inlineEdit.id, rec.carro || CARRO_PADRAO);
     if (err) { setInlineEdit(prev => ({ ...prev, err })); alert("⛔ " + err.msg); return; }
     const updated = { ...rec, kmInicial: inlineEdit.kmIni, kmFinal: inlineEdit.kmFin, observacao: inlineEdit.obs, synced: false };
     mutateRecords(recs => recs.map(x => x.id === rec.id ? updated : x));
     setInlineEdit(null);
-    syncRecordByDate(rec.data);
+    syncRecordByKey(rec.data, rec.carro || CARRO_PADRAO);
   }
 
   // ═══ RENDER ═══
@@ -712,14 +731,23 @@ export default function App() {
               </p>
             </div>
           </div>
-          <button
-            onClick={() => setScreen(screen === "home" ? "resumos" : "home")}
-            className="text-2xl px-1"
-            style={{ color: BTJ_BLUE }}
-            aria-label={screen === "home" ? "Ver resumos" : "Voltar"}
-          >
-            {screen === "home" ? "📊" : "←"}
-          </button>
+          {screen === "home" ? (
+            <button
+              onClick={() => setScreen("resumos")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
+              style={{ background: BTJ_BLUE }}
+            >
+              <span className="text-sm">📊</span> Relatório
+            </button>
+          ) : (
+            <button
+              onClick={() => { setScreen("home"); setInlineEdit(null); }}
+              className="text-sm font-medium"
+              style={{ color: BTJ_BLUE }}
+            >
+              ‹ Voltar
+            </button>
+          )}
         </div>
         {syncStatus && (
           <p className="max-w-lg mx-auto text-[11px] mt-1" style={{ color: syncStatus === "error" ? "#F09595" : BTJ_LIGHT }}>
@@ -756,11 +784,11 @@ export default function App() {
                     {openDays.map(r => (
                       <button
                         key={r.id}
-                        onClick={() => { setFData(r.data); setShowPending(false); }}
+                        onClick={() => { setFData(r.data); setFCarro(r.carro || CARRO_PADRAO); setShowPending(false); }}
                         className="w-full flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-100 text-left"
                       >
                         <span className="text-xs text-gray-700">
-                          {formatDateBR(r.data)} · {r.kmInicial == null ? "sem KM inicial" : "sem KM final"}
+                          {formatDateBR(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "sem KM inicial" : "sem KM final"}
                         </span>
                         <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
                       </button>
@@ -772,6 +800,17 @@ export default function App() {
 
             {/* Formulário do dia */}
             <Card className="mt-2.5 p-3.5">
+              <div className="mb-2.5">
+                <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
+                <select
+                  value={fCarro}
+                  onChange={e => { setFCarro(e.target.value); saveLastCar(e.target.value); }}
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white font-medium"
+                  style={{ color: BTJ_NAVY }}
+                >
+                  {(config.carros || DEFAULT_CONFIG.carros).map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
               <div className="flex gap-2 mb-2.5">
                 <div className="flex-1">
                   <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
@@ -791,6 +830,7 @@ export default function App() {
                     type="text"
                     value={fOrigem}
                     onChange={e => { setFOrigem(e.target.value); setFOrigemGps(false); }}
+                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
                     placeholder="detectando..."
                     className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
                   />
@@ -850,7 +890,7 @@ export default function App() {
                 <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#F5F7FA" }}>
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] text-gray-400">
-                      ↩ anterior · {formatDateShort(prevClosed.data)}{prevClosed.destino ? ` · ${prevClosed.origem || "?"} → ${prevClosed.destino}` : ""}
+                      ↩ anterior · {formatDateShort(prevClosed.data)} · {(prevClosed.carro || CARRO_PADRAO).split(" ")[0]}{prevClosed.destino ? ` · ${prevClosed.origem || "?"} → ${prevClosed.destino}` : ""}
                     </span>
                     <span className="text-[11px] text-gray-500">
                       ini <b>{prevClosed.kmInicial?.toLocaleString("pt-BR") ?? "—"}</b> · fim <b>{prevClosed.kmFinal.toLocaleString("pt-BR")}</b>
@@ -967,12 +1007,12 @@ export default function App() {
                     </button>
                     {opened && (
                       <div className="border-t border-gray-100">
-                        {s.recs.map(r => (
+                        {[...s.recs].reverse().map(r => (
                           <div key={r.id} className="border-b border-gray-50 last:border-b-0">
                             {inlineEdit?.id === r.id ? (
                               <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
                                 <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
-                                  Editando {formatDateShort(r.data)}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
+                                  Editando {formatDateShort(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
                                 </p>
                                 <div className="flex gap-1.5 mb-2">
                                   <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
@@ -1012,22 +1052,27 @@ export default function App() {
                                 {isOpen(r) ? (
                                   <>
                                     <span className="text-xs" style={{ color: "#D85A30" }}>
-                                      ⚠ {formatDateShort(r.data)} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                      ⚠ {formatDateShort(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
                                     </span>
                                     <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
                                   </>
                                 ) : (
-                                  <>
-                                    <div>
-                                      <span className="text-xs text-gray-700">
+                                  <div className="w-full">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-xs text-gray-700 font-medium">
                                         {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
                                       </span>
-                                      {r.observacao && <p className="text-[10px] text-gray-400">{r.observacao}</p>}
+                                      <span className="text-xs text-gray-600 font-medium">
+                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                      </span>
                                     </div>
-                                    <span className="text-xs text-gray-500">
-                                      {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
-                                    </span>
-                                  </>
+                                    <div className="flex items-center justify-between mt-0.5">
+                                      <span className="text-[10px] text-gray-400">
+                                        🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial?.toLocaleString("pt-BR") ?? "—"} → {r.kmFinal?.toLocaleString("pt-BR") ?? "—"}
+                                      </span>
+                                      {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[45%]">{r.observacao}</span>}
+                                    </div>
+                                  </div>
                                 )}
                               </button>
                             )}
