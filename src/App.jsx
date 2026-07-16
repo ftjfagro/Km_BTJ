@@ -91,7 +91,7 @@ function loadRecords() {
     if (raw) return JSON.parse(raw);
     const old = localStorage.getItem(KEY_RECORDS_OLD);
     if (old) {
-      const migrated = JSON.parse(old).map(r => ({ ...r, observacao: "", synced: true, logRow: null }));
+      const migrated = JSON.parse(old).map(r => ({ ...r, observacao: "", synced: true }));
       localStorage.setItem(KEY_RECORDS, JSON.stringify(migrated));
       return migrated;
     }
@@ -141,6 +141,17 @@ async function apiOcr(base64) {
   return data.km ?? null;
 }
 
+async function apiList() {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "list", colaborador: SOLICITANTE }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao listar lançamentos");
+  return data.lancamentos || [];
+}
+
 async function apiSave(record) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -154,7 +165,6 @@ async function apiSave(record) {
       kmFinal: record.kmFinal ?? "",
       observacao: record.observacao || "",
       colaborador: SOLICITANTE,
-      logRow: record.logRow || undefined,
     }),
   });
   const data = await res.json();
@@ -404,12 +414,58 @@ export default function App() {
     apiFetchConfig()
       .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
       .catch(() => {});
+    pullAndReconcile(); // baixa da planilha (fonte mestra) e alinha o local
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, []);
+
+  // Baixa os lançamentos da planilha e reconcilia com o local.
+  // Regra: pendentes de envio (synced=false) têm prioridade e são preservados;
+  // para todo o resto, a planilha é a fonte da verdade.
+  async function pullAndReconcile() {
+    if (!navigator.onLine) return;
+    try {
+      setSyncStatus("syncing");
+      const remote = await apiList(); // [{data, origem, destino, kmInicial, kmFinal, observacao, taxa}]
+      const local = loadRecords();
+      const pendentes = local.filter(r => r.synced === false);
+      const pendById = new Map(pendentes.map(r => [r.data, r]));
+
+      const merged = [];
+      // Começa da planilha; se o dia tem pendência local, a pendência vence
+      for (const rem of remote) {
+        if (pendById.has(rem.data)) {
+          merged.push(pendById.get(rem.data));
+          pendById.delete(rem.data);
+        } else {
+          merged.push({
+            id: `sheet-${rem.data}`,
+            data: rem.data,
+            origem: rem.origem,
+            destino: rem.destino,
+            kmInicial: rem.kmInicial,
+            kmFinal: rem.kmFinal,
+            observacao: rem.observacao,
+            synced: true,
+          });
+        }
+      }
+      // Pendências que não existiam na planilha (dias novos offline)
+      for (const p of pendById.values()) merged.push(p);
+
+      merged.sort((a, b) => a.data.localeCompare(b.data));
+      setRecords(merged);
+      persistRecords(merged);
+      // Sobe as pendências que sobreviveram (elas sobrescrevem a planilha)
+      resyncUnsynced();
+      setSyncStatus("ok");
+    } catch {
+      setSyncStatus(null); // offline ou erro: mantém o local como está
+    }
+  }
 
   // ── Carrega o registro do dia selecionado no formulário ──
   useEffect(() => {
@@ -474,7 +530,7 @@ export default function App() {
     for (const r of pending) {
       try {
         const res = await apiSave(r);
-        mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true, logRow: res.row } : x));
+        mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true} : x));
       } catch { /* fica pra próxima */ }
     }
   }
@@ -509,7 +565,7 @@ export default function App() {
     try {
       setSyncStatus("syncing");
       const res = await apiSave(r);
-      mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true, logRow: res.row } : x));
+      mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true} : x));
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -584,8 +640,9 @@ export default function App() {
       alert("⛔ " + err.msg);
       return;
     }
+    const existing = records.find(r => r.data === fData);
     const rec = {
-      id: editingId ?? Date.now(),
+      id: existing?.id ?? editingId ?? Date.now(),
       data: fData,
       origem: fOrigem,
       destino: fDestino,
@@ -593,11 +650,10 @@ export default function App() {
       kmFinal: fKmFin,
       observacao: fObs,
       synced: false,
-      logRow: editingId ? (records.find(r => r.id === editingId)?.logRow ?? null) : null,
     };
     mutateRecords(recs => {
-      const exists = recs.some(r => r.id === rec.id);
-      return exists ? recs.map(r => r.id === rec.id ? rec : r) : [...recs, rec];
+      const exists = recs.some(r => r.data === rec.data);
+      return exists ? recs.map(r => r.data === rec.data ? rec : r) : [...recs, rec];
     });
     setEditingId(rec.id);
     syncRecordByDate(fData);
