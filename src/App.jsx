@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { registerSW } from "virtual:pwa-register";
 import * as XLSX from "xlsx";
 
 // ─── Config fixa (infraestrutura) ─────────────────────────────────────────────
@@ -401,6 +402,8 @@ export default function App() {
   const [screen, setScreen] = useState("home"); // home | resumos
   const [online, setOnline] = useState(navigator.onLine);
   const [syncStatus, setSyncStatus] = useState(null);
+  const [needRefresh, setNeedRefresh] = useState(false);
+  const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(monthKey(todayISO()));
   const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
@@ -428,6 +431,9 @@ export default function App() {
 
   // ── Init ──
   useEffect(() => {
+    updateSWRef.current = registerSW({
+      onNeedRefresh() { setNeedRefresh(true); },
+    });
     setRecords(loadRecords());
     apiFetchConfig()
       .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
@@ -762,6 +768,16 @@ export default function App() {
       </div>
 
       <div className="max-w-lg mx-auto px-3 pb-6">
+
+        {needRefresh && (
+          <button
+            onClick={() => { updateSWRef.current?.(true); setNeedRefresh(false); }}
+            className="w-full mt-2.5 rounded-lg py-2 text-xs font-medium text-white"
+            style={{ background: BTJ_BLUE }}
+          >
+            ↻ Nova versão disponível — toque para atualizar
+          </button>
+        )}
 
         {/* ═══ TELA PRINCIPAL ═══ */}
         {screen === "home" && (
