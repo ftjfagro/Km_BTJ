@@ -246,6 +246,48 @@ function exportToExcel(records, mesLabel, taxas) {
   XLSX.writeFile(wb, `Relatorio_KM_${mesLabel.replace(/\s/g, "_")}.xlsx`);
 }
 
+// ─── Coerência do odômetro (contra dia anterior e seguinte) ───────────────────
+// Retorna { field, msg } se houver conflito, ou null se estiver ok.
+// records: lista atual; dateISO: dia sendo salvo; kmIni/kmFin: valores propostos.
+function checkCoherence(records, dateISO, kmIni, kmFin, ignoreId) {
+  const others = records.filter(r => r.data !== dateISO && r.id !== ignoreId);
+
+  const prev = others
+    .filter(r => r.data < dateISO && r.kmFinal != null)
+    .sort((a, b) => b.data.localeCompare(a.data))[0];
+  const prevIniOnly = prev ? null : others
+    .filter(r => r.data < dateISO && r.kmInicial != null)
+    .sort((a, b) => b.data.localeCompare(a.data))[0];
+
+  const next = others
+    .filter(r => r.data > dateISO && r.kmInicial != null)
+    .sort((a, b) => a.data.localeCompare(b.data))[0];
+
+  // KM inicial não pode ser menor que a última leitura anterior conhecida
+  if (kmIni != null) {
+    const ref = prev ? { v: prev.kmFinal, label: "KM final", d: prev.data }
+      : prevIniOnly ? { v: prevIniOnly.kmInicial, label: "KM inicial", d: prevIniOnly.data }
+      : null;
+    if (ref && kmIni < ref.v) {
+      return { field: "ini", msg: `KM inicial (${kmIni.toLocaleString("pt-BR")}) é menor que o ${ref.label} de ${formatDateBR(ref.d)} (${ref.v.toLocaleString("pt-BR")}). O odômetro não anda pra trás — confira o valor.` };
+    }
+  }
+
+  // KM final não pode ser maior que a primeira leitura do dia seguinte
+  if (kmFin != null && next) {
+    if (kmFin > next.kmInicial) {
+      return { field: "fin", msg: `KM final (${kmFin.toLocaleString("pt-BR")}) é maior que o KM inicial de ${formatDateBR(next.data)} (${next.kmInicial.toLocaleString("pt-BR")}). Confira o valor.` };
+    }
+  }
+
+  // Dentro do próprio dia
+  if (kmIni != null && kmFin != null && kmFin < kmIni) {
+    return { field: "fin", msg: `KM final (${kmFin.toLocaleString("pt-BR")}) menor que o inicial (${kmIni.toLocaleString("pt-BR")}).` };
+  }
+
+  return null;
+}
+
 // ─── Cálculos de resumo ───────────────────────────────────────────────────────
 function kmOf(r) {
   if (r.kmInicial == null || r.kmFinal == null) return 0;
@@ -277,34 +319,49 @@ function Card({ children, className = "" }) {
   return <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>;
 }
 
-function KmBox({ label, value, state, onPhoto, onManual, loading }) {
+function KmBox({ label, value, state, onCamera, onGallery, onManual, loading, error }) {
   // state: "done" | "pending" | "queued"
   const styles = {
     done: { bg: "bg-emerald-50", labelC: "text-emerald-700", valC: "text-emerald-900" },
     pending: { bg: "bg-amber-50", labelC: "text-amber-700", valC: "text-amber-600" },
     queued: { bg: "bg-sky-50", labelC: "text-sky-700", valC: "text-sky-600" },
   }[state];
+  const border = error ? "border-2 border-red-500" : "";
   return (
-    <div className={`flex-1 ${styles.bg} rounded-xl p-2.5 text-center`}>
-      <p className={`text-[11px] ${styles.labelC}`}>{label}</p>
+    <div className={`flex-1 ${styles.bg} ${border} rounded-xl p-2.5 text-center`}>
+      <p className={`text-[11px] ${error ? "text-red-600" : styles.labelC}`}>{label}</p>
       <input
         type="number"
         inputMode="numeric"
         placeholder="—"
         value={value ?? ""}
         onChange={e => onManual(e.target.value === "" ? null : Number(e.target.value))}
-        className={`w-full bg-transparent text-center text-lg font-semibold ${styles.valC} focus:outline-none`}
+        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        className={`w-full bg-transparent text-center text-lg font-semibold ${error ? "text-red-600" : styles.valC} focus:outline-none`}
       />
       {state === "queued" ? (
-        <div className="bg-sky-200 rounded-lg py-1 text-[11px] text-sky-900">☁ foto salva — aguardando conexão</div>
+        <div className="bg-sky-200 rounded-lg py-1 text-[11px] text-sky-900">☁ aguardando conexão</div>
       ) : (
-        <button
-          onClick={onPhoto}
-          disabled={loading}
-          className={`w-full rounded-lg py-1 text-[11px] ${state === "done" ? "bg-white text-emerald-700" : "bg-amber-400 text-amber-950 font-medium"}`}
-        >
-          {loading ? "⟳ lendo..." : state === "done" ? "✓ foto lida · refazer" : "📷 tirar foto"}
-        </button>
+        <div className="flex gap-1">
+          <button
+            onClick={onCamera}
+            disabled={loading}
+            className={`flex-1 rounded-lg py-1 text-sm ${state === "done" ? "bg-white" : "bg-amber-400"}`}
+            aria-label="Tirar foto"
+            title="Tirar foto"
+          >
+            {loading ? "⟳" : "📷"}
+          </button>
+          <button
+            onClick={onGallery}
+            disabled={loading}
+            className={`flex-1 rounded-lg py-1 text-sm ${state === "done" ? "bg-white" : "bg-amber-400"}`}
+            aria-label="Escolher da galeria"
+            title="Escolher da galeria"
+          >
+            🖼️
+          </button>
+        </div>
       )}
     </div>
   );
@@ -319,6 +376,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState(null);
   const [showPending, setShowPending] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(monthKey(todayISO()));
+  const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
 
   // Formulário (apontamento do dia)
   const [editingId, setEditingId] = useState(null);
@@ -334,8 +392,11 @@ export default function App() {
   const [queuedIni, setQueuedIni] = useState(false);
   const [queuedFin, setQueuedFin] = useState(false);
 
-  const fileIniRef = useRef(null);
-  const fileFinRef = useRef(null);
+  const fileIniCamRef = useRef(null);
+  const fileIniGalRef = useRef(null);
+  const fileFinCamRef = useRef(null);
+  const fileFinGalRef = useRef(null);
+  const [coherErr, setCoherErr] = useState(null); // { field, msg } | null
 
   // ── Init ──
   useEffect(() => {
@@ -370,6 +431,11 @@ export default function App() {
     setQueuedIni(q.some(p => p.date === fData && p.phase === "inicial"));
     setQueuedFin(q.some(p => p.date === fData && p.phase === "final"));
   }, [fData, records]);
+
+  // ── Coerência em tempo real ──
+  useEffect(() => {
+    setCoherErr(checkCoherence(records, fData, fKmIni, fKmFin, editingId));
+  }, [fKmIni, fKmFin, fData, records, editingId]);
 
   // ── GPS: preenche origem ao abrir (se vazia) ──
   useEffect(() => {
@@ -489,6 +555,10 @@ export default function App() {
       .filter(r => r.data < fData && r.kmInicial != null && r.kmFinal == null)
       .sort((a, b) => b.data.localeCompare(a.data))[0];
     if (!open) return;
+    // Só sugere se o valor for coerente como final daquele dia (>= inicial dele,
+    // e <= inicial do dia seguinte a ele, se houver).
+    const err = checkCoherence(records, open.data, open.kmInicial, km, open.id);
+    if (err) return;
     const ok = confirm(
       `O dia ${formatDateBR(open.data)} está sem KM final.\n` +
       `Como o carro ficou parado, usar esta leitura (${km.toLocaleString("pt-BR")}) como o KM final daquele dia?`
@@ -496,14 +566,22 @@ export default function App() {
     if (ok) applyKmToDate(open.data, "final", km);
   }
 
-  // ── Salvar apontamento (parcial permitido) ──
+  // ── Reaproveitar KM final de ontem como inicial de hoje ──
+  const prevClosed = records
+    .filter(r => r.data < fData && r.kmFinal != null)
+    .sort((a, b) => b.data.localeCompare(a.data))[0];
+  const showReuse = prevClosed && fKmIni == null;
+
+  // ── Salvar apontamento (parcial permitido, mas coerente) ──
   function save() {
     if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
       alert("Preencha ao menos um KM, destino ou observação.");
       return;
     }
-    if (fKmIni != null && fKmFin != null && fKmFin < fKmIni) {
-      alert("KM final menor que o inicial — confira os valores.");
+    const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId);
+    if (err) {
+      setCoherErr(err);
+      alert("⛔ " + err.msg);
       return;
     }
     const rec = {
@@ -536,6 +614,29 @@ export default function App() {
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
 
   const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
+
+  // ── Edição inline na tela de resumos ──
+  function openInline(r) {
+    setInlineEdit({ id: r.id, kmIni: r.kmInicial, kmFin: r.kmFinal, obs: r.observacao || "", err: null });
+  }
+  function changeInline(patch) {
+    setInlineEdit(prev => {
+      const next = { ...prev, ...patch };
+      const rec = records.find(r => r.id === next.id);
+      next.err = rec ? checkCoherence(records, rec.data, next.kmIni, next.kmFin, next.id) : null;
+      return next;
+    });
+  }
+  function saveInline() {
+    const rec = records.find(r => r.id === inlineEdit.id);
+    if (!rec) return;
+    const err = checkCoherence(records, rec.data, inlineEdit.kmIni, inlineEdit.kmFin, inlineEdit.id);
+    if (err) { setInlineEdit(prev => ({ ...prev, err })); alert("⛔ " + err.msg); return; }
+    const updated = { ...rec, kmInicial: inlineEdit.kmIni, kmFinal: inlineEdit.kmFin, observacao: inlineEdit.obs, synced: false };
+    mutateRecords(recs => recs.map(x => x.id === rec.id ? updated : x));
+    setInlineEdit(null);
+    syncRecordByDate(rec.data);
+  }
 
   // ═══ RENDER ═══
   return (
@@ -658,7 +759,9 @@ export default function App() {
                   value={fKmIni}
                   state={queuedIni ? "queued" : fKmIni != null ? "done" : "pending"}
                   loading={loadingIni}
-                  onPhoto={() => fileIniRef.current?.click()}
+                  error={coherErr?.field === "ini"}
+                  onCamera={() => fileIniCamRef.current?.click()}
+                  onGallery={() => fileIniGalRef.current?.click()}
                   onManual={v => setFKmIni(v)}
                 />
                 <KmBox
@@ -666,14 +769,48 @@ export default function App() {
                   value={fKmFin}
                   state={queuedFin ? "queued" : fKmFin != null ? "done" : "pending"}
                   loading={loadingFin}
-                  onPhoto={() => fileFinRef.current?.click()}
+                  error={coherErr?.field === "fin"}
+                  onCamera={() => fileFinCamRef.current?.click()}
+                  onGallery={() => fileFinGalRef.current?.click()}
                   onManual={v => setFKmFin(v)}
                 />
               </div>
-              <input ref={fileIniRef} type="file" accept="image/*" className="hidden"
+              <input ref={fileIniCamRef} type="file" accept="image/*" capture="environment" className="hidden"
                 onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
-              <input ref={fileFinRef} type="file" accept="image/*" className="hidden"
+              <input ref={fileIniGalRef} type="file" accept="image/*" className="hidden"
+                onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
+              <input ref={fileFinCamRef} type="file" accept="image/*" capture="environment" className="hidden"
                 onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
+              <input ref={fileFinGalRef} type="file" accept="image/*" className="hidden"
+                onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
+
+              {coherErr && (
+                <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#FDECEC" }}>
+                  <span className="text-[11px]" style={{ color: "#C62A2F" }}>⛔ {coherErr.msg}</span>
+                </div>
+              )}
+
+              {prevClosed && (
+                <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#F5F7FA" }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-gray-400">
+                      ↩ anterior · {formatDateShort(prevClosed.data)}{prevClosed.destino ? ` · ${prevClosed.origem || "?"} → ${prevClosed.destino}` : ""}
+                    </span>
+                    <span className="text-[11px] text-gray-500">
+                      ini <b>{prevClosed.kmInicial?.toLocaleString("pt-BR") ?? "—"}</b> · fim <b>{prevClosed.kmFinal.toLocaleString("pt-BR")}</b>
+                    </span>
+                  </div>
+                  {showReuse && (
+                    <button
+                      onClick={() => setFKmIni(prevClosed.kmFinal)}
+                      className="w-full mt-1.5 rounded-md py-1.5 text-[11px] font-medium"
+                      style={{ background: "#E6F1FB", color: "#185FA5", border: "0.5px solid #B8D9F5" }}
+                    >
+                      ↧ usar {prevClosed.kmFinal.toLocaleString("pt-BR")} como KM inicial de hoje
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="mb-3">
                 <p className="text-[11px] text-gray-500 mb-0.5">Observação do dia</p>
@@ -681,6 +818,7 @@ export default function App() {
                   type="text"
                   value={fObs}
                   onChange={e => setFObs(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
                   placeholder="Sobre o que foi a viagem..."
                   className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
                 />
@@ -688,10 +826,11 @@ export default function App() {
 
               <button
                 onClick={save}
-                className="w-full rounded-xl py-2.5 text-sm font-semibold text-white"
-                style={{ background: BTJ_BLUE }}
+                disabled={!!coherErr}
+                className="w-full rounded-xl py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed"
+                style={{ background: coherErr ? "#E7E5DE" : BTJ_BLUE, color: coherErr ? "#A8A69E" : "#fff" }}
               >
-                {fKmIni != null && fKmFin != null ? "Salvar apontamento" : "Salvar — completar depois"}
+                {coherErr ? "Salvar (corrija o KM)" : (fKmIni != null && fKmFin != null ? "Salvar apontamento" : "Salvar — completar depois")}
               </button>
             </Card>
 
@@ -773,32 +912,68 @@ export default function App() {
                     {opened && (
                       <div className="border-t border-gray-100">
                         {s.recs.map(r => (
-                          <div key={r.id} className="flex items-center justify-between px-3.5 py-2 border-b border-gray-50 last:border-b-0">
-                            {isOpen(r) ? (
-                              <>
-                                <span className="text-xs" style={{ color: "#D85A30" }}>
-                                  ⚠ {formatDateShort(r.data)} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
-                                </span>
-                                <button
-                                  onClick={() => { setFData(r.data); setScreen("home"); }}
-                                  className="text-xs font-medium"
-                                  style={{ color: BTJ_BLUE }}
-                                >
-                                  completar
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <div>
-                                  <span className="text-xs text-gray-700">
-                                    {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
-                                  </span>
-                                  {r.observacao && <p className="text-[10px] text-gray-400">{r.observacao}</p>}
+                          <div key={r.id} className="border-b border-gray-50 last:border-b-0">
+                            {inlineEdit?.id === r.id ? (
+                              <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
+                                <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
+                                  Editando {formatDateShort(r.data)}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
+                                </p>
+                                <div className="flex gap-1.5 mb-2">
+                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM inicial</p>
+                                    <input type="number" inputMode="numeric" value={inlineEdit.kmIni ?? ""} placeholder="—"
+                                      onChange={e => changeInline({ kmIni: e.target.value === "" ? null : Number(e.target.value) })}
+                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                  </div>
+                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "fin" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM final</p>
+                                    <input type="number" inputMode="numeric" value={inlineEdit.kmFin ?? ""} placeholder="—"
+                                      onChange={e => changeInline({ kmFin: e.target.value === "" ? null : Number(e.target.value) })}
+                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                  </div>
                                 </div>
-                                <span className="text-xs text-gray-500">
-                                  {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                                </span>
-                              </>
+                                {inlineEdit.err && <p className="text-[10px] mb-2" style={{ color: "#C62A2F" }}>⛔ {inlineEdit.err.msg}</p>}
+                                <input type="text" value={inlineEdit.obs} placeholder="observação..."
+                                  onChange={e => changeInline({ obs: e.target.value })}
+                                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
+                                <div className="flex gap-1.5">
+                                  <button onClick={saveInline} disabled={!!inlineEdit.err}
+                                    className="flex-[2] rounded-lg py-2 text-xs font-medium text-white disabled:opacity-50"
+                                    style={{ background: inlineEdit.err ? "#E7E5DE" : BTJ_BLUE }}>
+                                    Salvar alterações
+                                  </button>
+                                  <button onClick={() => setInlineEdit(null)}
+                                    className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">
+                                    Cancelar
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                {isOpen(r) ? (
+                                  <>
+                                    <span className="text-xs" style={{ color: "#D85A30" }}>
+                                      ⚠ {formatDateShort(r.data)} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                    </span>
+                                    <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div>
+                                      <span className="text-xs text-gray-700">
+                                        {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
+                                      </span>
+                                      {r.observacao && <p className="text-[10px] text-gray-400">{r.observacao}</p>}
+                                    </div>
+                                    <span className="text-xs text-gray-500">
+                                      {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                    </span>
+                                  </>
+                                )}
+                              </button>
                             )}
                           </div>
                         ))}
