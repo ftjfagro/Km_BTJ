@@ -720,6 +720,15 @@ export default function App() {
       setSyncStatus("syncing");
       const remote = await apiList();
       const local = loadRecords();
+      // Rede de segurança: guarda uma cópia do estado local ANTES de qualquer
+      // reconciliação. Se algo der errado, nada se perde de verdade.
+      try { localStorage.setItem("km_registros_backup", JSON.stringify({ ts: Date.now(), records: local })); } catch {}
+      // Proteção: se a base remota vier vazia mas houver dados locais,
+      // NÃO sobrescreve — mantém o local e avisa.
+      if (remote.length === 0 && local.length > 0) {
+        setSyncStatus("error");
+        return;
+      }
       const pendentes = local.filter(r => r.synced === false);
       const keyOf = r => `${r.data}|${r.carro || CARRO_PADRAO}`;
       const pendByKey = new Map(pendentes.map(r => [keyOf(r), r]));
@@ -1021,10 +1030,10 @@ export default function App() {
           )}
         </div>
         {syncStatus && (
-          <p className="max-w-lg mx-auto text-[11px] mt-1" style={{ color: syncStatus === "error" ? "#F09595" : BTJ_LIGHT }}>
-            {syncStatus === "syncing" && "☁ sincronizando com a planilha..."}
-            {syncStatus === "ok" && "☁ sincronizado com a planilha"}
-            {syncStatus === "error" && "⚠ sem conexão — salvo no aparelho, sincroniza depois"}
+          <p className="max-w-lg mx-auto text-[11px] mt-1" style={{ color: syncStatus === "error" ? "#FFD9A0" : BTJ_LIGHT }}>
+            {syncStatus === "syncing" && "☁ gravando na base de dados..."}
+            {syncStatus === "ok" && "✅ Apontamento gravado na base de dados"}
+            {syncStatus === "error" && "📱 Apontamento gravado LOCAL (sem sinal) — envio automático quando houver conexão"}
           </p>
         )}
         {!online && !syncStatus && (
