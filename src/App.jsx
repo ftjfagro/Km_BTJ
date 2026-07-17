@@ -152,6 +152,28 @@ async function apiOcr(base64) {
   return data.km ?? null;
 }
 
+async function apiSaveDespesa(d) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "saveDespesa", ...d }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao salvar despesa");
+  return data;
+}
+
+async function apiOcrExtrato(base64) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "ocrExtrato", image: base64 }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao ler o extrato");
+  return data.passagens || [];
+}
+
 async function apiList() {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -395,11 +417,254 @@ function KmBox({ label, value, state, onCamera, onGallery, onManual, loading, er
   );
 }
 
+// ─── Tela: Nova Despesa (manual) ──────────────────────────────────────────────
+const TIPOS_DESPESA = ["Pedágio", "Alimentação", "Estacionamento", "Outros"];
+
+function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
+  const [data, setData] = useState(todayISO());
+  const [carro, setCarro] = useState(carroInicial);
+  const [carroOutro, setCarroOutro] = useState("");
+  const [tipo, setTipo] = useState("Pedágio");
+  const [valor, setValor] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [compB64, setCompB64] = useState(null);
+  const [compNome, setCompNome] = useState("");
+  const [saving, setSaving] = useState(false);
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+
+  const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
+
+  async function pickComprovante(file) {
+    if (!file) return;
+    try {
+      const b64 = await fileToResizedBase64(file, 1600, 0.7);
+      setCompB64(b64);
+      setCompNome(file.name || "comprovante.jpg");
+    } catch { alert("Não consegui processar a imagem do comprovante."); }
+  }
+
+  async function salvar() {
+    if (!valor || Number(valor) <= 0) { alert("Informe o valor da despesa."); return; }
+    if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro (apelido/placa)."); return; }
+    setSaving(true);
+    try {
+      await apiSaveDespesa({
+        data, carro: carroFinal, tipo, valor: Number(valor),
+        descricao, comprovanteImage: compB64 || undefined, origem: "manual",
+      });
+      onSaved();
+    } catch (e) {
+      alert("Erro ao salvar: " + (e.message || "tente novamente."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="mt-2.5 p-3.5">
+      <div className="flex gap-2 mb-2.5">
+        <div className="flex-1">
+          <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
+          <input type="date" value={data} max={todayISO()} onChange={e => setData(e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+        </div>
+        <div className="flex-1">
+          <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
+          <select value={carro} onChange={e => setCarro(e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+            {carros.map(c => <option key={c} value={c}>{c}</option>)}
+            <option value="Outro (digitar)">Outro (digitar)</option>
+          </select>
+        </div>
+      </div>
+
+      {carro === "Outro (digitar)" && (
+        <input type="text" value={carroOutro} onChange={e => setCarroOutro(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          placeholder="Ex: Fiat Argo ABC1D23 (alugado)"
+          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mb-2.5" />
+      )}
+
+      <p className="text-[11px] text-gray-500 mb-1">Tipo</p>
+      <div className="flex gap-1.5 flex-wrap mb-2.5">
+        {TIPOS_DESPESA.map(t => (
+          <button key={t} onClick={() => setTipo(t)}
+            className="text-xs px-3 py-1.5 rounded-lg font-medium"
+            style={t === tipo ? { background: BTJ_BLUE, color: "#fff" } : { background: "#F1EFE8", color: "#5F5E5A" }}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2 mb-2.5">
+        <div className="flex-1">
+          <p className="text-[11px] text-gray-500 mb-0.5">Valor (R$)</p>
+          <input type="number" inputMode="decimal" value={valor} onChange={e => setValor(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+        </div>
+        <div className="flex-[1.4]">
+          <p className="text-[11px] text-gray-500 mb-0.5">Descrição (opcional)</p>
+          <input type="text" value={descricao} onChange={e => setDescricao(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+        </div>
+      </div>
+
+      <p className="text-[11px] text-gray-500 mb-1">Comprovante (opcional)</p>
+      <div className="flex gap-1.5 mb-3">
+        <button onClick={() => camRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Foto do comprovante">📷 Foto</button>
+        <button onClick={() => galRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Galeria">🖼️ Galeria</button>
+      </div>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0]); e.target.value = ""; }} />
+      <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0]); e.target.value = ""; }} />
+      {compNome && <p className="text-[10px] mb-3" style={{ color: "#0F6E56" }}>🧾 {compNome} — será enviado ao Drive ao salvar</p>}
+
+      <div className="flex gap-2">
+        <button onClick={salvar} disabled={saving}
+          className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+          style={{ background: BTJ_BLUE }}>
+          {saving ? "Salvando..." : "Salvar despesa"}
+        </button>
+        <button onClick={onCancel} className="flex-1 rounded-xl py-2.5 text-sm text-gray-600 border border-gray-200">Cancelar</button>
+      </div>
+    </Card>
+  );
+}
+
+// ─── Tela: Importar Extrato de Pedágio ────────────────────────────────────────
+function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
+  const [carro, setCarro] = useState(carroInicial);
+  const [carroOutro, setCarroOutro] = useState("");
+  const [passagens, setPassagens] = useState(null); // null = ainda não leu
+  const [sel, setSel] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+
+  const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
+
+  async function lerExtrato(file) {
+    if (!file) return;
+    if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro antes de importar."); return; }
+    setLoading(true);
+    try {
+      const b64 = await fileToResizedBase64(file, 1600, 0.7);
+      const lista = await apiOcrExtrato(b64);
+      if (!lista.length) { alert("Não encontrei passagens nesse print. Tente uma imagem mais nítida."); return; }
+      setPassagens(lista);
+      const inicial = {};
+      lista.forEach((_, i) => { inicial[i] = true; }); // tudo marcado por padrão
+      setSel(inicial);
+    } catch (e) {
+      alert("Erro ao ler o extrato: " + (e.message || "tente novamente."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const totalSel = passagens ? passagens.reduce((s, p, i) => s + (sel[i] ? Number(p.valor) || 0 : 0), 0) : 0;
+  const qtdSel = passagens ? passagens.filter((_, i) => sel[i]).length : 0;
+
+  async function lancar() {
+    setSaving(true);
+    try {
+      const marcadas = passagens.filter((_, i) => sel[i]);
+      for (const p of marcadas) {
+        await apiSaveDespesa({
+          data: p.data, carro: carroFinal, tipo: "Pedágio",
+          valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
+        });
+      }
+      alert(`${marcadas.length} pedágio(s) lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
+      onDone();
+    } catch (e) {
+      alert("Erro ao lançar: " + (e.message || "tente novamente."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="mt-2.5 p-3.5">
+      <div className="mb-2.5">
+        <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro deste extrato</p>
+        <select value={carro} onChange={e => setCarro(e.target.value)}
+          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+          {carros.map(c => <option key={c} value={c}>{c}</option>)}
+          <option value="Outro (digitar)">Outro (digitar)</option>
+        </select>
+        {carro === "Outro (digitar)" && (
+          <input type="text" value={carroOutro} onChange={e => setCarroOutro(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            placeholder="Ex: Fiat Argo ABC1D23"
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mt-2" />
+        )}
+      </div>
+
+      {!passagens && (
+        <>
+          <p className="text-xs text-gray-500 mb-2">Mande o print do extrato do cartão de pedágio. Leio as passagens e você seleciona as de trabalho.</p>
+          <div className="flex gap-1.5">
+            <button onClick={() => camRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">
+              {loading ? "⟳ lendo..." : "📷 Foto"}
+            </button>
+            <button onClick={() => galRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">🖼️ Galeria</button>
+          </div>
+          <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { lerExtrato(e.target.files[0]); e.target.value = ""; }} />
+          <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { lerExtrato(e.target.files[0]); e.target.value = ""; }} />
+        </>
+      )}
+
+      {passagens && (
+        <>
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-[11px] text-gray-500">Desmarque as de uso pessoal</span>
+            <span className="text-[11px] font-medium" style={{ color: "#185FA5" }}>{qtdSel} de {passagens.length}</span>
+          </div>
+          <div className="border border-gray-100 rounded-xl overflow-hidden mb-3">
+            {passagens.map((p, i) => (
+              <button key={i} onClick={() => setSel(s => ({ ...s, [i]: !s[i] }))}
+                className="w-full flex items-center gap-2.5 px-3 py-2 border-b border-gray-50 last:border-b-0 text-left">
+                <div className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-xs text-white shrink-0"
+                  style={{ background: sel[i] ? BTJ_BLUE : "transparent", border: sel[i] ? "none" : "1.5px solid #CFCFC8" }}>
+                  {sel[i] ? "✓" : ""}
+                </div>
+                <div className="flex-1">
+                  <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"}`}>{p.local || "Pedágio"}</p>
+                  <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayPT(p.data)}</p>
+                </div>
+                <span className={`text-xs font-semibold ${sel[i] ? "" : "text-gray-400 line-through"}`} style={sel[i] ? { color: "#04342C" } : {}}>
+                  R$ {(Number(p.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-between items-center mb-3">
+            <span className="text-sm font-semibold text-gray-800">Total selecionado</span>
+            <span className="text-base font-bold" style={{ color: BTJ_NAVY }}>R$ {totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={lancar} disabled={saving || qtdSel === 0}
+              className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+              style={{ background: BTJ_BLUE }}>
+              {saving ? "Lançando..." : `Lançar ${qtdSel} pedágio(s)`}
+            </button>
+            <button onClick={onCancel} className="flex-1 rounded-xl py-2.5 text-sm text-gray-600 border border-gray-200">Cancelar</button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [records, setRecords] = useState([]);
   const [config, setConfig] = useState(loadCachedConfig());
-  const [screen, setScreen] = useState("home"); // home | resumos
+  const [screen, setScreen] = useState("home"); // home | resumos | despesa | extrato
   const [online, setOnline] = useState(navigator.onLine);
   const [syncStatus, setSyncStatus] = useState(null);
   const [needRefresh, setNeedRefresh] = useState(false);
@@ -968,7 +1233,45 @@ export default function App() {
             {kmHoje > 0 && (
               <p className="text-center text-[11px] text-gray-400 mt-1.5">hoje: {kmHoje.toLocaleString("pt-BR")} km</p>
             )}
+
+            {/* Ações de despesa */}
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => setScreen("despesa")}
+                className="flex-1 rounded-xl py-2.5 text-sm font-medium border"
+                style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
+              >
+                + Despesa
+              </button>
+              <button
+                onClick={() => setScreen("extrato")}
+                className="flex-1 rounded-xl py-2.5 text-sm font-medium border"
+                style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
+              >
+                📄 Importar pedágio
+              </button>
+            </div>
           </>
+        )}
+
+        {/* ═══ NOVA DESPESA ═══ */}
+        {screen === "despesa" && (
+          <DespesaManual
+            carros={config.carros || DEFAULT_CONFIG.carros}
+            carroInicial={fCarro}
+            onSaved={() => { setScreen("home"); pullAndReconcile(); }}
+            onCancel={() => setScreen("home")}
+          />
+        )}
+
+        {/* ═══ IMPORTAR EXTRATO ═══ */}
+        {screen === "extrato" && (
+          <ImportarExtrato
+            carros={config.carros || DEFAULT_CONFIG.carros}
+            carroInicial={fCarro}
+            onDone={() => { setScreen("home"); pullAndReconcile(); }}
+            onCancel={() => setScreen("home")}
+          />
         )}
 
         {/* ═══ TELA DE RESUMOS ═══ */}
