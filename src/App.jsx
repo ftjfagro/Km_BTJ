@@ -61,6 +61,27 @@ function weekdayPT(iso) {
 function monthKey(iso) {
   return iso.slice(0, 7); // "2026-07"
 }
+
+// Ciclo de reembolso 26→25. Uma data pertence ao período que "fecha" no dia 25.
+// Ex: 26/06 a 25/07 → período "2026-07" (Julho). 25/06 → "2026-06" (Junho).
+function periodKey(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  let py = y, pm = m;
+  if (d >= 26) { pm = m + 1; if (pm > 12) { pm = 1; py = y + 1; } }
+  return `${py}-${String(pm).padStart(2, "0")}`;
+}
+function periodLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  return `${MONTHS_PT[m - 1]} ${y}`;
+}
+function periodRange(key) {
+  const [y, m] = key.split("-").map(Number);
+  // fim = dia 25 do mês do período; início = dia 26 do mês anterior
+  const fim = `${y}-${String(m).padStart(2, "0")}-25`;
+  let iy = y, im = m - 1; if (im < 1) { im = 12; iy = y - 1; }
+  const ini = `${iy}-${String(im).padStart(2, "0")}-26`;
+  return { ini, fim };
+}
 function monthLabelFromKey(key) {
   const [y, m] = key.split("-").map(Number);
   return `${MONTHS_PT[m - 1]} ${y}`;
@@ -161,6 +182,50 @@ async function apiSaveDespesa(d) {
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao salvar despesa");
   return data;
+}
+
+async function apiUpdateDespesa(d) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "updateDespesa", ...d }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao atualizar despesa");
+  return data;
+}
+
+async function apiDeleteDespesa(id) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "deleteDespesa", id }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao excluir despesa");
+  return data;
+}
+
+async function apiListDespesas() {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "listDespesas" }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao listar despesas");
+  return data.despesas || [];
+}
+
+async function apiOcrCupom(base64) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "ocrCupom", image: base64 }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao ler o cupom");
+  return data.cupom || null;
 }
 
 async function apiOcrExtrato(base64) {
@@ -432,15 +497,36 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
   const [saving, setSaving] = useState(false);
   const camRef = useRef(null);
   const galRef = useRef(null);
+  const camCupomRef = useRef(null);
+  const galCupomRef = useRef(null);
 
   const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
 
-  async function pickComprovante(file) {
+  const [lendoCupom, setLendoCupom] = useState(false);
+
+  async function pickComprovante(file, lerIA) {
     if (!file) return;
     try {
       const b64 = await fileToResizedBase64(file, 1600, 0.7);
       setCompB64(b64);
       setCompNome(file.name || "comprovante.jpg");
+      if (lerIA) {
+        setLendoCupom(true);
+        try {
+          const c = await apiOcrCupom(b64);
+          if (c) {
+            if (c.valor != null) setValor(String(c.valor));
+            if (c.data) setData(String(c.data).slice(0, 10));
+            if (c.descricao) setDescricao(c.descricao);
+          } else {
+            alert("Não consegui ler o cupom automaticamente. Preencha os campos na mão (a foto foi guardada como comprovante).");
+          }
+        } catch (e) {
+          alert("Falha ao ler o cupom: " + (e.message || "") + ". A foto foi guardada; preencha na mão.");
+        } finally {
+          setLendoCupom(false);
+        }
+      }
     } catch { alert("Não consegui processar a imagem do comprovante."); }
   }
 
@@ -513,12 +599,24 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
       </div>
 
       <p className="text-[11px] text-gray-500 mb-1">Comprovante (opcional)</p>
-      <div className="flex gap-1.5 mb-3">
+      <div className="flex gap-1.5 mb-1.5">
         <button onClick={() => camRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Foto do comprovante">📷 Foto</button>
         <button onClick={() => galRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Galeria">🖼️ Galeria</button>
       </div>
-      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0]); e.target.value = ""; }} />
-      <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0]); e.target.value = ""; }} />
+      <div className="flex gap-1.5 mb-3">
+        <button onClick={() => camCupomRef.current?.click()} disabled={lendoCupom}
+          className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
+          {lendoCupom ? "⟳ lendo cupom..." : "✨ 📷 Ler cupom (IA)"}
+        </button>
+        <button onClick={() => galCupomRef.current?.click()} disabled={lendoCupom}
+          className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
+          {lendoCupom ? "⟳..." : "✨ 🖼️ Ler cupom (IA)"}
+        </button>
+      </div>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], false); e.target.value = ""; }} />
+      <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], false); e.target.value = ""; }} />
+      <input ref={camCupomRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], true); e.target.value = ""; }} />
+      <input ref={galCupomRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], true); e.target.value = ""; }} />
       {compNome && <p className="text-[10px] mb-3" style={{ color: "#0F6E56" }}>🧾 {compNome} — será enviado ao Drive ao salvar</p>}
 
       <div className="flex gap-2">
@@ -546,17 +644,30 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
 
   const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
 
-  async function lerExtrato(file) {
-    if (!file) return;
+  async function lerExtrato(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
     if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro antes de importar."); return; }
     setLoading(true);
     try {
-      const b64 = await fileToResizedBase64(file, 1600, 0.7);
-      const lista = await apiOcrExtrato(b64);
-      if (!lista.length) { alert("Não encontrei passagens nesse print. Tente uma imagem mais nítida."); return; }
-      setPassagens(lista);
+      let todas = [];
+      for (const file of files) {
+        const b64 = await fileToResizedBase64(file, 1600, 0.7);
+        const lista = await apiOcrExtrato(b64);
+        todas = todas.concat(lista);
+      }
+      // Remove duplicatas (mesma data + local + valor) que podem aparecer se as fotos se sobrepõem
+      const vistos = new Set();
+      const unicas = [];
+      for (const p of todas) {
+        const chave = `${p.data}|${(p.local || "").toLowerCase()}|${p.valor}`;
+        if (!vistos.has(chave)) { vistos.add(chave); unicas.push(p); }
+      }
+      unicas.sort((a, b) => String(a.data).localeCompare(String(b.data)));
+      if (!unicas.length) { alert("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
+      setPassagens(unicas);
       const inicial = {};
-      lista.forEach((_, i) => { inicial[i] = true; }); // tudo marcado por padrão
+      unicas.forEach((_, i) => { inicial[i] = true; });
       setSel(inicial);
     } catch (e) {
       alert("Erro ao ler o extrato: " + (e.message || "tente novamente."));
@@ -606,15 +717,15 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
 
       {!passagens && (
         <>
-          <p className="text-xs text-gray-500 mb-2">Mande o print do extrato do cartão de pedágio. Leio as passagens e você seleciona as de trabalho.</p>
+          <p className="text-xs text-gray-500 mb-2">Mande o(s) print(s) do extrato do cartão de pedágio — pode selecionar várias fotos de uma vez. Leio as passagens e você seleciona as de trabalho.</p>
           <div className="flex gap-1.5">
             <button onClick={() => camRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">
               {loading ? "⟳ lendo..." : "📷 Foto"}
             </button>
-            <button onClick={() => galRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">🖼️ Galeria</button>
+            <button onClick={() => galRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">🖼️ Galeria (várias)</button>
           </div>
-          <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { lerExtrato(e.target.files[0]); e.target.value = ""; }} />
-          <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { lerExtrato(e.target.files[0]); e.target.value = ""; }} />
+          <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { lerExtrato(e.target.files); e.target.value = ""; }} />
+          <input ref={galRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { lerExtrato(e.target.files); e.target.value = ""; }} />
         </>
       )}
 
@@ -660,11 +771,125 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
   );
 }
 
+// ─── Tela: Gestão de Despesas (Pedágios ou Outras) ───────────────────────────
+function GestaoDespesas({ titulo, icone, despesas, carros, onChange, onAdd, addLabel }) {
+  // Agrupa por período 26→25, últimos 3
+  const byPeriod = {};
+  despesas.forEach(d => {
+    const k = periodKey(d.data);
+    (byPeriod[k] = byPeriod[k] || []).push(d);
+  });
+  const keys = Object.keys(byPeriod).sort().reverse().slice(0, 3);
+
+  const [expanded, setExpanded] = useState(keys[0] || null);
+  const [edit, setEdit] = useState(null); // { id, valor, descricao, data }
+  const [busy, setBusy] = useState(false);
+
+  async function salvarEdicao() {
+    setBusy(true);
+    try {
+      await apiUpdateDespesa({ id: edit.id, valor: Number(edit.valor) || 0, descricao: edit.descricao, data: edit.data });
+      setEdit(null);
+      await onChange();
+    } catch (e) { alert("Erro ao salvar: " + (e.message || "")); }
+    finally { setBusy(false); }
+  }
+  async function excluir(id) {
+    if (!confirm("Excluir esta despesa? Não dá pra desfazer.")) return;
+    setBusy(true);
+    try { await apiDeleteDespesa(id); await onChange(); }
+    catch (e) { alert("Erro ao excluir: " + (e.message || "")); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Card className="mt-2.5 p-3.5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-gray-800">{icone} {titulo}</h2>
+        <button onClick={onAdd} className="text-xs font-medium px-2.5 py-1.5 rounded-lg" style={{ background: BTJ_BLUE, color: "#fff" }}>
+          {addLabel}
+        </button>
+      </div>
+
+      {keys.length === 0 && <p className="text-sm text-gray-400 text-center py-6">Nenhuma despesa lançada ainda.</p>}
+
+      <div className="space-y-2">
+        {keys.map(k => {
+          const itens = byPeriod[k].sort((a, b) => b.data.localeCompare(a.data));
+          const total = itens.reduce((s, d) => s + (Number(d.valor) || 0), 0);
+          const aberto = expanded === k;
+          return (
+            <div key={k} className="border border-gray-100 rounded-xl overflow-hidden">
+              <button onClick={() => setExpanded(aberto ? null : k)} className="w-full flex items-center justify-between px-3.5 py-3 text-left">
+                <div>
+                  <p className="text-sm font-semibold" style={{ color: BTJ_NAVY }}>{periodLabel(k)}</p>
+                  <p className="text-[11px] text-gray-400">{itens.length} lançamento(s)</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold" style={{ color: BTJ_BLUE }}>R$ {total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                  <span className="text-gray-400 text-xs">{aberto ? "▲" : "▼"}</span>
+                </div>
+              </button>
+              {aberto && (
+                <div className="border-t border-gray-100">
+                  {itens.map(d => (
+                    <div key={d.id} className="border-b border-gray-50 last:border-b-0">
+                      {edit?.id === d.id ? (
+                        <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
+                          <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>Editando · {d.tipo} · {(d.carro || "").split(" ")[0]}</p>
+                          <div className="flex gap-1.5 mb-2">
+                            <div className="flex-1">
+                              <p className="text-[9px] text-gray-500 mb-0.5">Data</p>
+                              <input type="date" value={edit.data} onChange={e => setEdit({ ...edit, data: e.target.value })}
+                                className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-[9px] text-gray-500 mb-0.5">Valor</p>
+                              <input type="number" inputMode="decimal" value={edit.valor} onChange={e => setEdit({ ...edit, valor: e.target.value })}
+                                onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs" />
+                            </div>
+                          </div>
+                          <input type="text" value={edit.descricao} placeholder="descrição" onChange={e => setEdit({ ...edit, descricao: e.target.value })}
+                            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
+                          <div className="flex gap-1.5">
+                            <button onClick={salvarEdicao} disabled={busy} className="flex-[2] rounded-lg py-2 text-xs font-medium text-white" style={{ background: BTJ_BLUE }}>Salvar</button>
+                            <button onClick={() => setEdit(null)} className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">Cancelar</button>
+                            <button onClick={() => excluir(d.id)} disabled={busy} className="flex-1 rounded-lg py-2 text-xs" style={{ background: "#FDECEC", color: "#C62A2F" }}>🗑</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button onClick={() => setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data })}
+                          className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                          <div className="min-w-0">
+                            <p className="text-xs text-gray-800">{formatDateShort(d.data)} · {(d.carro || "").split(" ")[0]}{d.descricao ? ` · ${d.descricao}` : ""}</p>
+                            <p className="text-[10px] text-gray-400">
+                              {d.origem}{d.comprovante ? " · 🧾 " : ""}
+                              {d.comprovante && <a href={String(d.comprovante).split(" | ")[0]} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: BTJ_BLUE }}>comprovante</a>}
+                            </p>
+                          </div>
+                          <span className="text-xs font-semibold shrink-0" style={{ color: "#04342C" }}>R$ {(Number(d.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎</span>
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [records, setRecords] = useState([]);
   const [config, setConfig] = useState(loadCachedConfig());
-  const [screen, setScreen] = useState("home"); // home | resumos | despesa | extrato
+  const [screen, setScreen] = useState("home"); // home | resumos | despesa | extrato | despMenu | despPedagio | despOutras
+  const [despesas, setDespesas] = useState([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [syncStatus, setSyncStatus] = useState(null);
   const [needRefresh, setNeedRefresh] = useState(false);
@@ -704,6 +929,7 @@ export default function App() {
       .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
       .catch(() => {});
     pullAndReconcile(); // baixa da planilha (fonte mestra) e alinha o local
+    refreshDespesas();
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener("online", on);
@@ -714,6 +940,11 @@ export default function App() {
   // Baixa os lançamentos da planilha e reconcilia com o local.
   // Regra: pendentes de envio (synced=false) têm prioridade e são preservados;
   // para todo o resto, a planilha é a fonte da verdade.
+  async function refreshDespesas() {
+    if (!navigator.onLine) return;
+    try { setDespesas(await apiListDespesas()); } catch {}
+  }
+
   async function pullAndReconcile() {
     if (!navigator.onLine) return;
     try {
@@ -1021,7 +1252,11 @@ export default function App() {
             </button>
           ) : (
             <button
-              onClick={() => { setScreen("home"); setInlineEdit(null); }}
+              onClick={() => {
+                setInlineEdit(null);
+                const voltarPraMenu = ["despPedagio", "despOutras", "despesa", "extrato"];
+                setScreen(voltarPraMenu.indexOf(screen) !== -1 ? "despMenu" : "home");
+              }}
               className="text-sm font-medium"
               style={{ color: BTJ_BLUE }}
             >
@@ -1243,24 +1478,68 @@ export default function App() {
               <p className="text-center text-[11px] text-gray-400 mt-1.5">hoje: {kmHoje.toLocaleString("pt-BR")} km</p>
             )}
 
-            {/* Ações de despesa */}
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => setScreen("despesa")}
-                className="flex-1 rounded-xl py-2.5 text-sm font-medium border"
-                style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
-              >
+            {/* Acesso a despesas */}
+            <button
+              onClick={() => setScreen("despMenu")}
+              className="w-full mt-3 rounded-xl py-2.5 text-sm font-medium border"
+              style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
+            >
+              💳 Despesas
+            </button>
+          </>
+        )}
+
+        {/* ═══ MENU DE DESPESAS ═══ */}
+        {screen === "despMenu" && (
+          <Card className="mt-2.5 p-4">
+            <h2 className="font-semibold text-gray-800 mb-3">Despesas</h2>
+            <div className="space-y-2">
+              <button onClick={() => setScreen("despPedagio")}
+                className="w-full flex items-center justify-between rounded-xl px-4 py-3 border border-gray-100 text-left">
+                <span className="text-sm text-gray-800">🛣️ Pedágios</span>
+                <span className="text-gray-300">›</span>
+              </button>
+              <button onClick={() => setScreen("despOutras")}
+                className="w-full flex items-center justify-between rounded-xl px-4 py-3 border border-gray-100 text-left">
+                <span className="text-sm text-gray-800">🧾 Outras despesas</span>
+                <span className="text-gray-300">›</span>
+              </button>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => setScreen("despesa")}
+                className="flex-1 rounded-xl py-2.5 text-sm font-medium text-white" style={{ background: BTJ_BLUE }}>
                 + Despesa
               </button>
-              <button
-                onClick={() => setScreen("extrato")}
-                className="flex-1 rounded-xl py-2.5 text-sm font-medium border"
-                style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
-              >
+              <button onClick={() => setScreen("extrato")}
+                className="flex-1 rounded-xl py-2.5 text-sm font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
                 📄 Importar pedágio
               </button>
             </div>
-          </>
+          </Card>
+        )}
+
+        {/* ═══ LISTA: PEDÁGIOS ═══ */}
+        {screen === "despPedagio" && (
+          <GestaoDespesas
+            titulo="Pedágios" icone="🛣️"
+            despesas={despesas.filter(d => (d.tipo || "").toLowerCase().indexOf("ped") === 0)}
+            carros={config.carros || DEFAULT_CONFIG.carros}
+            onChange={refreshDespesas}
+            onAdd={() => setScreen("extrato")}
+            addLabel="📄 Importar pedágio"
+          />
+        )}
+
+        {/* ═══ LISTA: OUTRAS DESPESAS ═══ */}
+        {screen === "despOutras" && (
+          <GestaoDespesas
+            titulo="Outras despesas" icone="🧾"
+            despesas={despesas.filter(d => (d.tipo || "").toLowerCase().indexOf("ped") !== 0)}
+            carros={config.carros || DEFAULT_CONFIG.carros}
+            onChange={refreshDespesas}
+            onAdd={() => setScreen("despesa")}
+            addLabel="+ Despesa"
+          />
         )}
 
         {/* ═══ NOVA DESPESA ═══ */}
@@ -1268,8 +1547,8 @@ export default function App() {
           <DespesaManual
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
-            onSaved={() => { setScreen("home"); pullAndReconcile(); }}
-            onCancel={() => setScreen("home")}
+            onSaved={() => { setScreen("despMenu"); refreshDespesas(); }}
+            onCancel={() => setScreen("despMenu")}
           />
         )}
 
@@ -1278,8 +1557,8 @@ export default function App() {
           <ImportarExtrato
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
-            onDone={() => { setScreen("home"); pullAndReconcile(); }}
-            onCancel={() => setScreen("home")}
+            onDone={() => { setScreen("despMenu"); refreshDespesas(); }}
+            onCancel={() => setScreen("despMenu")}
           />
         )}
 
