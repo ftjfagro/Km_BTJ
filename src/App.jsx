@@ -228,6 +228,17 @@ async function apiOcrCupom(base64) {
   return data.cupom || null;
 }
 
+async function apiCheckDuplicatas(passagens) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "checarDuplicatas", passagens }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao checar duplicatas");
+  return data.passagens || passagens;
+}
+
 async function apiOcrExtrato(base64) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -404,10 +415,27 @@ function kmOf(r) {
 function isOpen(r) {
   return r.kmInicial == null || r.kmFinal == null;
 }
-function monthSummary(records, key, taxas) {
+function monthSummary(records, key, taxas, despesas) {
   const recs = records.filter(r => monthKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
-  const receber = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, SOLICITANTE, r.data), 0);
+  const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, SOLICITANTE, r.data), 0);
+
+  // Pedágio do mês, e por dia (soma todos os carros daquele dia numa linha só).
+  const pedagioPorDia = {};
+  (despesas || []).forEach(d => {
+    if ((d.tipo || "").toLowerCase().indexOf("ped") !== 0) return;
+    if (monthKey(d.data) !== key) return;
+    pedagioPorDia[d.data] = (pedagioPorDia[d.data] || 0) + (Number(d.valor) || 0);
+  });
+  const pedagioMes = Object.values(pedagioPorDia).reduce((s, v) => s + v, 0);
+
+  // Dias com pedágio mas sem apontamento de KM viram linhas "sintéticas".
+  const diasComKm = new Set(recs.map(r => r.data));
+  const diasSoDeaPedagio = Object.keys(pedagioPorDia)
+    .filter(d => !diasComKm.has(d))
+    .map(d => ({ id: `pedagio-${d}`, data: d, soPedagio: true }));
+
+  const recsComPedagio = [...recs, ...diasSoDeaPedagio].sort((a, b) => a.data.localeCompare(b.data));
 
   // KM pessoal é por carro (odômetros diferentes) e depois somado.
   const carros = [...new Set(recs.map(r => r.carro || CARRO_PADRAO))];
@@ -426,7 +454,10 @@ function monthSummary(records, key, taxas) {
       pessoal = (pessoal || 0) + Math.max(0, span - trabC);
     }
   }
-  return { recs, trabalho, receber, pessoal, viagens: recs.filter(r => kmOf(r) > 0).length };
+  return {
+    recs: recsComPedagio, trabalho, receber: receberKm + pedagioMes, receberKm, pedagioMes, pedagioPorDia,
+    pessoal, viagens: recs.filter(r => kmOf(r) > 0).length,
+  };
 }
 
 // ─── UI base ──────────────────────────────────────────────────────────────────
@@ -483,13 +514,20 @@ function KmBox({ label, value, state, onCamera, onGallery, onManual, loading, er
 }
 
 // ─── Tela: Nova Despesa (manual) ──────────────────────────────────────────────
-const TIPOS_DESPESA = ["Pedágio", "Alimentação", "Estacionamento", "Outros"];
+const TIPOS_DESPESA = ["Alimentação", "Mobilidade", "Hotel", "Outros"];
+const TIPO_COR = {
+  "Alimentação": { bg: "#E1F5EE", fg: "#085041" },
+  "Mobilidade": { bg: "#E6F1FB", fg: "#0C447C" },
+  "Hotel": { bg: "#EEEDFE", fg: "#3C3489" },
+  "Pedágio": { bg: "#FAEEDA", fg: "#633806" },
+  "Outros": { bg: "#F1EFE8", fg: "#444441" },
+};
 
 function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
   const [data, setData] = useState(todayISO());
   const [carro, setCarro] = useState(carroInicial);
   const [carroOutro, setCarroOutro] = useState("");
-  const [tipo, setTipo] = useState("Pedágio");
+  const [tipo, setTipo] = useState("Alimentação");
   const [valor, setValor] = useState("");
   const [descricao, setDescricao] = useState("");
   const [compB64, setCompB64] = useState(null);
@@ -631,7 +669,7 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
   );
 }
 
-// ─── Tela: Importar Extrato de Pedágio ────────────────────────────────────────
+// ─── Tela: Importar Extrato do Tag (pedágio/estacionamento cobrado no tag) ────
 function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
   const [carro, setCarro] = useState(carroInicial);
   const [carroOutro, setCarroOutro] = useState("");
@@ -639,7 +677,6 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
   const [sel, setSel] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const camRef = useRef(null);
   const galRef = useRef(null);
 
   const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
@@ -656,18 +693,16 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
         const lista = await apiOcrExtrato(b64);
         todas = todas.concat(lista);
       }
-      // Remove duplicatas (mesma data + local + valor) que podem aparecer se as fotos se sobrepõem
-      const vistos = new Set();
-      const unicas = [];
-      for (const p of todas) {
-        const chave = `${p.data}|${(p.local || "").toLowerCase()}|${p.valor}`;
-        if (!vistos.has(chave)) { vistos.add(chave); unicas.push(p); }
-      }
-      unicas.sort((a, b) => String(a.data).localeCompare(String(b.data)));
-      if (!unicas.length) { alert("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
-      setPassagens(unicas);
+      // Sem dedupe entre passagens do mesmo print: passagens iguais (mesma data/local/valor)
+      // podem ser genuinamente diferentes (duas passadas pela mesma praça no mesmo dia).
+      todas.sort((a, b) => String(a.data).localeCompare(String(b.data)));
+      if (!todas.length) { alert("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
+      // Checa contra o que já está na planilha (essa sim é uma duplicata real).
+      let comCheck = todas;
+      try { comCheck = await apiCheckDuplicatas(todas); } catch { /* segue sem o check se falhar */ }
+      setPassagens(comCheck);
       const inicial = {};
-      unicas.forEach((_, i) => { inicial[i] = true; });
+      comCheck.forEach((p, i) => { inicial[i] = !p.jaLancado; }); // já lançadas vêm desmarcadas
       setSel(inicial);
     } catch (e) {
       alert("Erro ao ler o extrato: " + (e.message || "tente novamente."));
@@ -689,7 +724,7 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
           valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
         });
       }
-      alert(`${marcadas.length} pedágio(s) lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
+      alert(`${marcadas.length} lançamento(s) do tag lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
       onDone();
     } catch (e) {
       alert("Erro ao lançar: " + (e.message || "tente novamente."));
@@ -717,14 +752,11 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
 
       {!passagens && (
         <>
-          <p className="text-xs text-gray-500 mb-2">Mande o(s) print(s) do extrato do cartão de pedágio — pode selecionar várias fotos de uma vez. Leio as passagens e você seleciona as de trabalho.</p>
-          <div className="flex gap-1.5">
-            <button onClick={() => camRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">
-              {loading ? "⟳ lendo..." : "📷 Foto"}
-            </button>
-            <button onClick={() => galRef.current?.click()} disabled={loading} className="flex-1 rounded-lg py-2.5 text-sm bg-amber-400">🖼️ Galeria (várias)</button>
-          </div>
-          <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { lerExtrato(e.target.files); e.target.value = ""; }} />
+          <p className="text-xs text-gray-500 mb-2">Mande o(s) print(s) do extrato do tag (C6, Veloe, Sem Parar etc.) — pode selecionar várias fotos de uma vez da galeria. Cobre pedágio e outras cobranças do tag (ex: estacionamento).</p>
+          <button onClick={() => galRef.current?.click()} disabled={loading}
+            className="w-full rounded-lg py-2.5 text-sm bg-amber-400">
+            {loading ? "⟳ lendo..." : "🖼️ Escolher fotos da galeria (várias)"}
+          </button>
           <input ref={galRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { lerExtrato(e.target.files); e.target.value = ""; }} />
         </>
       )}
@@ -737,20 +769,27 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
           </div>
           <div className="border border-gray-100 rounded-xl overflow-hidden mb-3">
             {passagens.map((p, i) => (
-              <button key={i} onClick={() => setSel(s => ({ ...s, [i]: !s[i] }))}
-                className="w-full flex items-center gap-2.5 px-3 py-2 border-b border-gray-50 last:border-b-0 text-left">
-                <div className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-xs text-white shrink-0"
-                  style={{ background: sel[i] ? BTJ_BLUE : "transparent", border: sel[i] ? "none" : "1.5px solid #CFCFC8" }}>
-                  {sel[i] ? "✓" : ""}
-                </div>
-                <div className="flex-1">
-                  <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"}`}>{p.local || "Pedágio"}</p>
-                  <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayPT(p.data)}</p>
-                </div>
-                <span className={`text-xs font-semibold ${sel[i] ? "" : "text-gray-400 line-through"}`} style={sel[i] ? { color: "#04342C" } : {}}>
-                  R$ {(Number(p.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                </span>
-              </button>
+              <div key={i} className={`border-b border-gray-50 last:border-b-0 ${p.jaLancado ? "bg-red-50" : ""}`}>
+                <button onClick={() => setSel(s => ({ ...s, [i]: !s[i] }))}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-left">
+                  <div className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-xs text-white shrink-0"
+                    style={{ background: sel[i] ? BTJ_BLUE : "transparent", border: sel[i] ? "none" : "1.5px solid #CFCFC8" }}>
+                    {sel[i] ? "✓" : ""}
+                  </div>
+                  <div className="flex-1">
+                    <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"} ${p.jaLancado ? "!text-red-700" : ""}`}>
+                      {p.local || "Pedágio"}{p.jaLancado ? " · já lançado antes" : ""}
+                    </p>
+                    <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayPT(p.data)}</p>
+                  </div>
+                  <span className={`text-xs font-semibold ${sel[i] ? "" : "text-gray-400 line-through"}`} style={sel[i] ? { color: "#04342C" } : {}}>
+                    R$ {(Number(p.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                  </span>
+                </button>
+                {p.jaLancado && (
+                  <p className="text-[10px] text-red-700 px-3 pb-2 -mt-1">⚠ Uma passagem igual (mesma data, local e valor) já está na planilha. Marque só se for outra passagem real.</p>
+                )}
+              </div>
             ))}
           </div>
           <div className="flex justify-between items-center mb-3">
@@ -761,7 +800,7 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
             <button onClick={lancar} disabled={saving || qtdSel === 0}
               className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60"
               style={{ background: BTJ_BLUE }}>
-              {saving ? "Lançando..." : `Lançar ${qtdSel} pedágio(s)`}
+              {saving ? "Lançando..." : `Lançar ${qtdSel} lançamento(s)`}
             </button>
             <button onClick={onCancel} className="flex-1 rounded-xl py-2.5 text-sm text-gray-600 border border-gray-200">Cancelar</button>
           </div>
@@ -864,10 +903,13 @@ function GestaoDespesas({ titulo, icone, despesas, carros, onChange, onAdd, addL
                           className="w-full flex items-center justify-between px-3.5 py-2 text-left">
                           <div className="min-w-0">
                             <p className="text-xs text-gray-800">{formatDateShort(d.data)} · {(d.carro || "").split(" ")[0]}{d.descricao ? ` · ${d.descricao}` : ""}</p>
-                            <p className="text-[10px] text-gray-400">
-                              {d.origem}{d.comprovante ? " · 🧾 " : ""}
-                              {d.comprovante && <a href={String(d.comprovante).split(" | ")[0]} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: BTJ_BLUE }}>comprovante</a>}
-                            </p>
+                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded"
+                                style={{ background: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).bg, color: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).fg }}>
+                                {d.tipo}{d.tipo === "Pedágio" && d.origem === "extrato" ? " · importado" : ""}
+                              </span>
+                              {d.comprovante && <a href={String(d.comprovante).split(" | ")[0]} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[10px]" style={{ color: BTJ_BLUE }}>🧾 comprovante</a>}
+                            </div>
                           </div>
                           <span className="text-xs font-semibold shrink-0" style={{ color: "#04342C" }}>R$ {(Number(d.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎</span>
                         </button>
@@ -1075,10 +1117,12 @@ export default function App() {
 
   function applyKmToDate(dateISO, carro, phase, km) {
     if (km == null) return;
+    let updatedRec = null;
     mutateRecords(recs => {
       const idx = recs.findIndex(r => r.data === dateISO && (r.carro || CARRO_PADRAO) === carro);
       if (idx === -1) return recs;
       const upd = { ...recs[idx], [phase === "inicial" ? "kmInicial" : "kmFinal"]: km, synced: false };
+      updatedRec = upd;
       const next = [...recs];
       next[idx] = upd;
       return next;
@@ -1086,16 +1130,15 @@ export default function App() {
     if (dateISO === fData && carro === fCarro) {
       if (phase === "inicial") setFKmIni(km); else setFKmFin(km);
     }
-    syncRecordByKey(dateISO, carro);
+    syncRecord(updatedRec);
   }
 
-  async function syncRecordByKey(dateISO, carro) {
-    const r = loadRecords().find(x => x.data === dateISO && (x.carro || CARRO_PADRAO) === carro);
-    if (!r) return;
+  async function syncRecord(rec) {
+    if (!rec) return;
     try {
       setSyncStatus("syncing");
-      await apiSave(r);
-      mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
+      await apiSave(rec);
+      mutateRecords(recs => recs.map(x => x.id === rec.id ? { ...x, synced: true } : x));
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -1186,13 +1229,13 @@ export default function App() {
       return exists ? recs.map(r => (r.data === rec.data && (r.carro || CARRO_PADRAO) === fCarro) ? rec : r) : [...recs, rec];
     });
     setEditingId(rec.id);
-    syncRecordByKey(fData, fCarro);
+    syncRecord(rec);
   }
 
   // ── Derivados ──
   const openDays = records.filter(isOpen).sort((a, b) => b.data.localeCompare(a.data));
   const curKey = monthKey(todayISO());
-  const cur = monthSummary(records, curKey, config.taxas);
+  const cur = monthSummary(records, curKey, config.taxas, despesas);
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
@@ -1221,15 +1264,15 @@ export default function App() {
     const updated = { ...rec, kmInicial: inlineEdit.kmIni, kmFinal: inlineEdit.kmFin, observacao: inlineEdit.obs, synced: false };
     mutateRecords(recs => recs.map(x => x.id === rec.id ? updated : x));
     setInlineEdit(null);
-    syncRecordByKey(rec.data, rec.carro || CARRO_PADRAO);
+    syncRecord(updated);
   }
 
   // ═══ RENDER ═══
   return (
     <div className="min-h-screen font-sans" style={{ background: "#F4F6FA" }}>
 
-      {/* Cabeçalho */}
-      <div style={{ background: BTJ_NAVY }} className="text-white pt-9 pb-4 px-4">
+      {/* Cabeçalho fixo */}
+      <div style={{ background: BTJ_NAVY }} className="text-white pt-9 pb-4 px-4 sticky top-0 z-20">
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-white px-2 py-1 rounded-sm">
@@ -1243,13 +1286,22 @@ export default function App() {
             </div>
           </div>
           {screen === "home" ? (
-            <button
-              onClick={() => setScreen("resumos")}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
-              style={{ background: BTJ_BLUE }}
-            >
-              <span className="text-sm">📊</span> Relatório
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => setScreen("resumos")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
+                style={{ background: BTJ_BLUE }}
+              >
+                <span className="text-sm">📊</span> Relatório
+              </button>
+              <button
+                onClick={() => setScreen("despMenu")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs bg-white"
+                style={{ color: BTJ_NAVY, border: `0.5px solid ${BTJ_BLUE}` }}
+              >
+                <span className="text-sm">💳</span> Despesas
+              </button>
+            </div>
           ) : (
             <button
               onClick={() => {
@@ -1411,6 +1463,17 @@ export default function App() {
                 </div>
               )}
 
+              {fKmIni != null && fKmFin != null && fKmFin >= fKmIni && (
+                <div className="rounded-lg px-2.5 py-2 mb-2" style={{ background: "#E6F1FB" }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px]" style={{ color: "#185FA5" }}>Saldo do dia</span>
+                    <span className="text-sm font-semibold" style={{ color: "#0C447C" }}>
+                      {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, SOLICITANTE, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {prevClosed && (
                 <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#F5F7FA" }}>
                   <div className="flex items-center justify-between">
@@ -1462,9 +1525,9 @@ export default function App() {
                 <p className="text-sm font-semibold" style={{ color: BTJ_NAVY }}>{cur.trabalho.toLocaleString("pt-BR")} km</p>
               </div>
               <div className="flex-1 bg-white border border-gray-100 rounded-xl p-2 text-center">
-                <p className="text-[10px] text-gray-400">👤 Pessoal</p>
-                <p className="text-sm font-semibold text-gray-500">
-                  {cur.pessoal == null ? "—" : `${cur.pessoal.toLocaleString("pt-BR")} km`}
+                <p className="text-[10px] text-gray-400">🛣️ Pedágio</p>
+                <p className="text-sm font-semibold" style={{ color: "#854F0B" }}>
+                  R$ {cur.pedagioMes.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                 </p>
               </div>
               <div className="flex-1 rounded-xl p-2 text-center" style={{ background: BTJ_NAVY }}>
@@ -1477,31 +1540,23 @@ export default function App() {
             {kmHoje > 0 && (
               <p className="text-center text-[11px] text-gray-400 mt-1.5">hoje: {kmHoje.toLocaleString("pt-BR")} km</p>
             )}
-
-            {/* Acesso a despesas */}
-            <button
-              onClick={() => setScreen("despMenu")}
-              className="w-full mt-3 rounded-xl py-2.5 text-sm font-medium border"
-              style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY, background: "#fff" }}
-            >
-              💳 Despesas
-            </button>
           </>
         )}
 
         {/* ═══ MENU DE DESPESAS ═══ */}
         {screen === "despMenu" && (
           <Card className="mt-2.5 p-4">
-            <h2 className="font-semibold text-gray-800 mb-3">Despesas</h2>
+            <h2 className="font-semibold text-gray-800 mb-0.5">Despesas</h2>
+            <p className="text-[11px] text-gray-400 mb-3">Veja e edite os lançamentos já feitos</p>
             <div className="space-y-2">
               <button onClick={() => setScreen("despPedagio")}
                 className="w-full flex items-center justify-between rounded-xl px-4 py-3 border border-gray-100 text-left">
-                <span className="text-sm text-gray-800">🛣️ Pedágios</span>
+                <span className="text-sm text-gray-800">🛣️ Ver pedágios <span className="text-gray-400 font-normal">· resumo</span></span>
                 <span className="text-gray-300">›</span>
               </button>
               <button onClick={() => setScreen("despOutras")}
                 className="w-full flex items-center justify-between rounded-xl px-4 py-3 border border-gray-100 text-left">
-                <span className="text-sm text-gray-800">🧾 Outras despesas</span>
+                <span className="text-sm text-gray-800">🧾 Ver outras despesas <span className="text-gray-400 font-normal">· resumo</span></span>
                 <span className="text-gray-300">›</span>
               </button>
             </div>
@@ -1512,7 +1567,7 @@ export default function App() {
               </button>
               <button onClick={() => setScreen("extrato")}
                 className="flex-1 rounded-xl py-2.5 text-sm font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
-                📄 Importar pedágio
+                📄 Importar extrato do tag
               </button>
             </div>
           </Card>
@@ -1526,7 +1581,7 @@ export default function App() {
             carros={config.carros || DEFAULT_CONFIG.carros}
             onChange={refreshDespesas}
             onAdd={() => setScreen("extrato")}
-            addLabel="📄 Importar pedágio"
+            addLabel="📄 Importar extrato do tag"
           />
         )}
 
@@ -1573,8 +1628,8 @@ export default function App() {
                   <p className="text-base font-semibold text-white">{cur.trabalho.toLocaleString("pt-BR")} km</p>
                 </div>
                 <div>
-                  <p className="text-[10px]" style={{ color: BTJ_LIGHT }}>Pessoal</p>
-                  <p className="text-base font-semibold text-white">{cur.pessoal == null ? "—" : `${cur.pessoal.toLocaleString("pt-BR")} km`}</p>
+                  <p className="text-[10px]" style={{ color: BTJ_LIGHT }}>Pedágio</p>
+                  <p className="text-base font-semibold text-white">R$ {cur.pedagioMes.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
                 </div>
                 <div className="ml-auto text-right">
                   <p className="text-[10px]" style={{ color: BTJ_LIGHT }}>A receber</p>
@@ -1590,7 +1645,7 @@ export default function App() {
                 <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
               )}
               {monthKeys.map(key => {
-                const s = monthSummary(records, key, config.taxas);
+                const s = monthSummary(records, key, config.taxas, despesas);
                 const isCur = key === curKey;
                 const opened = expandedMonth === key;
                 return (
@@ -1654,6 +1709,13 @@ export default function App() {
                                   </button>
                                 </div>
                               </div>
+                            ) : r.soPedagio ? (
+                              <div className="w-full flex items-center justify-between px-3.5 py-2">
+                                <span className="text-xs text-gray-400">{formatDateShort(r.data)} · sem viagem registrada</span>
+                                <span className="text-xs font-medium" style={{ color: "#854F0B" }}>
+                                  🛣️ R$ {(s.pedagioPorDia[r.data] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
+                                </span>
+                              </div>
                             ) : (
                               <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
                                 {isOpen(r) ? (
@@ -1679,6 +1741,13 @@ export default function App() {
                                       </span>
                                       {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[45%]">{r.observacao}</span>}
                                     </div>
+                                    {s.pedagioPorDia[r.data] > 0 && (
+                                      <div className="flex items-center gap-1 mt-1">
+                                        <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
+                                          🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
+                                        </span>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </button>
