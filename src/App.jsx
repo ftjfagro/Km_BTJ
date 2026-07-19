@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { registerSW } from "virtual:pwa-register";
 import * as XLSX from "xlsx";
 
@@ -670,7 +670,7 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
 }
 
 // ─── Tela: Importar Extrato do Tag (pedágio/estacionamento cobrado no tag) ────
-function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
+function ImportarExtrato({ carros, carroInicial, records, onDone, onCancel }) {
   const [carro, setCarro] = useState(carroInicial);
   const [carroOutro, setCarroOutro] = useState("");
   const [passagens, setPassagens] = useState(null); // null = ainda não leu
@@ -680,6 +680,16 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
   const galRef = useRef(null);
 
   const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
+
+  // Dias em que existe viagem de trabalho lançada para o carro deste extrato
+  // (usado pra pré-marcar só as passagens que batem com um dia de trabalho).
+  const diasComViagem = useMemo(() => {
+    const s = new Set();
+    (records || []).forEach(r => {
+      if ((r.carro || CARRO_PADRAO) === carroFinal) s.add(r.data);
+    });
+    return s;
+  }, [records, carroFinal]);
 
   async function lerExtrato(fileList) {
     const files = Array.from(fileList || []);
@@ -702,7 +712,12 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
       try { comCheck = await apiCheckDuplicatas(todas); } catch { /* segue sem o check se falhar */ }
       setPassagens(comCheck);
       const inicial = {};
-      comCheck.forEach((p, i) => { inicial[i] = !p.jaLancado; }); // já lançadas vêm desmarcadas
+      comCheck.forEach((p, i) => {
+        // Pré-marca só se: não foi lançada antes E existe viagem de trabalho
+        // desse carro nesse dia. Sem viagem correspondente = vem desmarcada
+        // (provável uso pessoal), pra você decidir.
+        inicial[i] = !p.jaLancado && diasComViagem.has(p.data);
+      });
       setSel(inicial);
     } catch (e) {
       alert("Erro ao ler o extrato: " + (e.message || "tente novamente."));
@@ -737,7 +752,7 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
     <Card className="mt-2.5 p-3.5">
       <div className="mb-2.5">
         <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro deste extrato</p>
-        <select value={carro} onChange={e => setCarro(e.target.value)}
+        <select value={carro} onChange={e => { setCarro(e.target.value); saveLastCar(e.target.value); }}
           className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
           {carros.map(c => <option key={c} value={c}>{c}</option>)}
           <option value="Outro (digitar)">Outro (digitar)</option>
@@ -768,8 +783,11 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
             <span className="text-[11px] font-medium" style={{ color: "#185FA5" }}>{qtdSel} de {passagens.length}</span>
           </div>
           <div className="border border-gray-100 rounded-xl overflow-hidden mb-3">
-            {passagens.map((p, i) => (
-              <div key={i} className={`border-b border-gray-50 last:border-b-0 ${p.jaLancado ? "bg-red-50" : ""}`}>
+            {passagens.map((p, i) => {
+              const temViagem = diasComViagem.has(p.data);
+              const semViagem = !p.jaLancado && !temViagem;
+              return (
+              <div key={i} className={`border-b border-gray-50 last:border-b-0 ${p.jaLancado ? "bg-red-50" : semViagem ? "bg-amber-50" : ""}`}>
                 <button onClick={() => setSel(s => ({ ...s, [i]: !s[i] }))}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-left">
                   <div className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-xs text-white shrink-0"
@@ -777,8 +795,8 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
                     {sel[i] ? "✓" : ""}
                   </div>
                   <div className="flex-1">
-                    <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"} ${p.jaLancado ? "!text-red-700" : ""}`}>
-                      {p.local || "Pedágio"}{p.jaLancado ? " · já lançado antes" : ""}
+                    <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"} ${p.jaLancado ? "!text-red-700" : semViagem ? "!text-amber-700" : ""}`}>
+                      {p.local || "Pedágio"}{p.jaLancado ? " · já lançado antes" : semViagem ? " · sem viagem nesse dia" : ""}
                     </p>
                     <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayPT(p.data)}</p>
                   </div>
@@ -789,8 +807,12 @@ function ImportarExtrato({ carros, carroInicial, onDone, onCancel }) {
                 {p.jaLancado && (
                   <p className="text-[10px] text-red-700 px-3 pb-2 -mt-1">⚠ Uma passagem igual (mesma data, local e valor) já está na planilha. Marque só se for outra passagem real.</p>
                 )}
+                {semViagem && (
+                  <p className="text-[10px] text-amber-700 px-3 pb-2 -mt-1">🚗 Não há viagem de trabalho lançada para {carroFinal} nesse dia. Marque só se for mesmo uso de trabalho.</p>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
           <div className="flex justify-between items-center mb-3">
             <span className="text-sm font-semibold text-gray-800">Total selecionado</span>
@@ -1272,11 +1294,11 @@ export default function App() {
     <div className="min-h-screen font-sans" style={{ background: "#F4F6FA" }}>
 
       {/* Cabeçalho fixo */}
-      <div style={{ background: BTJ_NAVY }} className="text-white pt-9 pb-4 px-4 sticky top-0 z-20">
+      <div style={{ background: BTJ_NAVY }} className="text-white pt-6 pb-2.5 px-4 sticky top-0 z-20">
         <div className="max-w-lg mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-white px-2 py-1 rounded-sm">
-              <img src={logoUrl} alt="BTJ" className="h-6" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>'; }} />
+          <div className="flex items-center gap-2">
+            <div className="bg-white px-1.5 py-0.5 rounded-sm">
+              <img src={logoUrl} alt="BTJ" className="h-5" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>'; }} />
             </div>
             <div>
               <p className="text-sm font-semibold leading-tight">Felipe Torquato</p>
@@ -1317,14 +1339,14 @@ export default function App() {
           )}
         </div>
         {syncStatus && (
-          <p className="max-w-lg mx-auto text-[11px] mt-1" style={{ color: syncStatus === "error" ? "#FFD9A0" : BTJ_LIGHT }}>
+          <p className="max-w-lg mx-auto text-[11px] mt-0.5" style={{ color: syncStatus === "error" ? "#FFD9A0" : BTJ_LIGHT }}>
             {syncStatus === "syncing" && "☁ gravando na base de dados..."}
             {syncStatus === "ok" && "✅ Apontamento gravado na base de dados"}
             {syncStatus === "error" && "📱 Apontamento gravado LOCAL (sem sinal) — envio automático quando houver conexão"}
           </p>
         )}
         {!online && !syncStatus && (
-          <p className="max-w-lg mx-auto text-[11px] mt-1" style={{ color: BTJ_LIGHT }}>✈ modo offline — tudo fica salvo no aparelho</p>
+          <p className="max-w-lg mx-auto text-[11px] mt-0.5" style={{ color: BTJ_LIGHT }}>✈ modo offline — tudo fica salvo no aparelho</p>
         )}
       </div>
 
@@ -1612,6 +1634,7 @@ export default function App() {
           <ImportarExtrato
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
+            records={records}
             onDone={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
           />
