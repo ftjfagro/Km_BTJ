@@ -215,6 +215,17 @@ async function apiSaveDespesa(d) {
   return data;
 }
 
+async function apiAddCarro(carro) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "addCarro", carro }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao cadastrar carro");
+  return data;
+}
+
 async function apiUpdateDespesa(d) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -453,10 +464,12 @@ function monthSummary(records, key, taxas, colaboradores, despesas) {
 
   // Pedágio do período, e por dia (soma todos os carros daquele dia numa linha só).
   const pedagioPorDia = {};
+  const pedagioItensPorDia = {};
   (despesas || []).forEach(d => {
     if ((d.tipo || "").toLowerCase().indexOf("ped") !== 0) return;
     if (periodKey(d.data) !== key) return;
     pedagioPorDia[d.data] = (pedagioPorDia[d.data] || 0) + (Number(d.valor) || 0);
+    (pedagioItensPorDia[d.data] = pedagioItensPorDia[d.data] || []).push({ local: d.descricao || "Pedágio", valor: Number(d.valor) || 0 });
   });
   const pedagioMes = Object.values(pedagioPorDia).reduce((s, v) => s + v, 0);
 
@@ -486,7 +499,7 @@ function monthSummary(records, key, taxas, colaboradores, despesas) {
     }
   }
   return {
-    recs: recsComPedagio, trabalho, receber: receberKm + pedagioMes, receberKm, pedagioMes, pedagioPorDia,
+    recs: recsComPedagio, trabalho, receber: receberKm + pedagioMes, receberKm, pedagioMes, pedagioPorDia, pedagioItensPorDia,
     pessoal, viagens: recs.filter(r => kmOf(r) > 0).length,
   };
 }
@@ -545,7 +558,7 @@ function KmBox({ label, value, state, onCamera, onGallery, onManual, loading, er
 }
 
 // ─── Tela: Nova Despesa (manual) ──────────────────────────────────────────────
-const TIPOS_DESPESA = ["Alimentação", "Mobilidade", "Hotel", "Outros"];
+const TIPOS_DESPESA = ["Alimentação", "Mobilidade", "Hotel", "Pedágio", "Outros"];
 const TIPO_COR = {
   "Alimentação": { bg: "#E1F5EE", fg: "#085041" },
   "Mobilidade": { bg: "#E6F1FB", fg: "#0C447C" },
@@ -554,12 +567,80 @@ const TIPO_COR = {
   "Outros": { bg: "#F1EFE8", fg: "#444441" },
 };
 
-function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel }) {
+const NOVO_CARRO_VALUE = "__novo_carro__";
+
+// Input de valor "estilo caixa registradora": digita só números, as duas
+// últimas casas viram centavos automaticamente (ex: 1000 -> R$ 10,00).
+function digitsParaReais(digits) {
+  return (parseInt(digits || "0", 10)) / 100;
+}
+function ValorInput({ digits, onDigitsChange, className, placeholder }) {
+  return (
+    <input
+      type="text" inputMode="numeric"
+      value={digits ? digitsParaReais(digits).toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : ""}
+      placeholder={placeholder || "0,00"}
+      onChange={e => onDigitsChange(e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, ""))}
+      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+      className={className}
+    />
+  );
+}
+
+
+function CadastrarCarroModal({ onSaved, onCancel }) {
+  const [modelo, setModelo] = useState("");
+  const [placa, setPlaca] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function salvar() {
+    if (!modelo.trim()) { alert("Digite o modelo/apelido do carro."); return; }
+    if (!placa.trim()) { alert("Digite a placa."); return; }
+    const carroCompleto = `${modelo.trim()} ${placa.trim().toUpperCase()}`;
+    setSaving(true);
+    try {
+      await apiAddCarro(carroCompleto);
+      onSaved(carroCompleto);
+    } catch (e) {
+      alert("Erro ao cadastrar carro: " + (e.message || ""));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
+      <div className="bg-white rounded-xl p-4 w-full max-w-sm">
+        <p className="font-semibold text-sm mb-3" style={{ color: BTJ_NAVY }}>🚗 Cadastrar novo carro</p>
+        <p className="text-[11px] text-gray-500 mb-0.5">Modelo / apelido</p>
+        <input type="text" value={modelo} onChange={e => setModelo(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          placeholder="Ex: Fiat Argo" autoFocus
+          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mb-2.5" />
+        <p className="text-[11px] text-gray-500 mb-0.5">Placa</p>
+        <input type="text" value={placa} onChange={e => setPlaca(e.target.value.toUpperCase())}
+          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          placeholder="Ex: ABC1D23"
+          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mb-3" />
+        <div className="flex gap-2">
+          <button onClick={salvar} disabled={saving}
+            className="flex-[2] rounded-lg py-2 text-sm font-semibold text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+            {saving ? "Cadastrando..." : "Cadastrar e usar"}
+          </button>
+          <button onClick={onCancel} disabled={saving} className="flex-1 rounded-lg py-2 text-sm text-gray-600 border border-gray-200">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DespesaManual({ carros, carroInicial, limites, faixa, onNovoCarro, onSaved, onCancel }) {
   const [data, setData] = useState(todayISO());
   const [carro, setCarro] = useState(carroInicial);
-  const [carroOutro, setCarroOutro] = useState("");
+  const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
   const [tipo, setTipo] = useState("Alimentação");
-  const [valor, setValor] = useState("");
+  const [valorDigits, setValorDigits] = useState("");
+  const valor = valorDigits ? digitsParaReais(valorDigits) : 0;
   const [descricao, setDescricao] = useState("");
   const [compB64, setCompB64] = useState(null);
   const [compNome, setCompNome] = useState("");
@@ -569,9 +650,8 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
   const camCupomRef = useRef(null);
   const galCupomRef = useRef(null);
 
-  const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
-
   const [lendoCupom, setLendoCupom] = useState(false);
+  const [usarIA, setUsarIA] = useState(true);
 
   // ─── Rateio ────────────────────────────────────────────────────────────
   const [pessoas, setPessoas] = useState(1);
@@ -599,7 +679,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
         try {
           const c = await apiOcrCupom(b64);
           if (c) {
-            if (c.valor != null) setValor(String(c.valor));
+            if (c.valor != null) setValorDigits(String(Math.round(Number(c.valor) * 100)));
             if (c.data) setData(String(c.data).slice(0, 10));
             if (c.descricao) setDescricao(c.descricao);
           } else {
@@ -616,7 +696,6 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
 
   async function salvar() {
     if (!valor || Number(valor) <= 0) { alert("Informe o valor da despesa."); return; }
-    if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro (apelido/placa)."); return; }
     if (excede && !escolhaExcedente) {
       alert(`O valor por pessoa (R$ ${valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}) passa do limite de R$ ${limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Escolha uma das opções abaixo antes de salvar.`);
       return;
@@ -632,7 +711,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
     setSaving(true);
     try {
       await apiSaveDespesa({
-        data, carro: carroFinal, tipo, valor: valorFinal,
+        data, carro, tipo, valor: valorFinal,
         descricao, comprovanteImage: compB64 || undefined, origem: "manual",
         pessoasRateio: precisaRateio ? nPessoas : 1,
         rateioCom: precisaRateio ? comQuem : "",
@@ -649,28 +728,11 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
 
   return (
     <Card className="mt-2.5 p-3.5">
-      <div className="flex gap-2 mb-2.5">
-        <div className="flex-1">
-          <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
-          <input type="date" value={data} max={todayISO()} onChange={e => setData(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
-        </div>
-        <div className="flex-1">
-          <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
-          <select value={carro} onChange={e => setCarro(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
-            {carros.map(c => <option key={c} value={c}>{c}</option>)}
-            <option value="Outro (digitar)">Outro (digitar)</option>
-          </select>
-        </div>
+      <div className="mb-2.5">
+        <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
+        <input type="date" value={data} max={todayISO()} onChange={e => setData(e.target.value)}
+          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
       </div>
-
-      {carro === "Outro (digitar)" && (
-        <input type="text" value={carroOutro} onChange={e => setCarroOutro(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-          placeholder="Ex: Fiat Argo ABC1D23 (alugado)"
-          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mb-2.5" />
-      )}
 
       <p className="text-[11px] text-gray-500 mb-1">Tipo</p>
       <div className="flex gap-1.5 flex-wrap mb-2.5">
@@ -683,20 +745,44 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
         ))}
       </div>
 
+      {tipo === "Pedágio" && (
+        <div className="mb-2.5">
+          <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro (pedágio avulso)</p>
+          <select value={carro} onChange={e => {
+              if (e.target.value === NOVO_CARRO_VALUE) { setMostrarCadastroCarro(true); return; }
+              setCarro(e.target.value);
+            }}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+            {carros.map(c => <option key={c} value={c}>{c}</option>)}
+            <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
+          </select>
+        </div>
+      )}
+
+      {mostrarCadastroCarro && (
+        <CadastrarCarroModal
+          onCancel={() => setMostrarCadastroCarro(false)}
+          onSaved={(novoCarro) => { onNovoCarro(novoCarro); setCarro(novoCarro); setMostrarCadastroCarro(false); }}
+        />
+      )}
+
       <div className="flex gap-2 mb-2.5">
         <div className="flex-1">
           <p className="text-[11px] text-gray-500 mb-0.5">Valor (R$)</p>
-          <input type="number" inputMode="decimal" value={valor} onChange={e => setValor(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-            placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+          <ValorInput digits={valorDigits} onDigitsChange={setValorDigits}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
         </div>
         <div className="flex-[1.4]">
-          <p className="text-[11px] text-gray-500 mb-0.5">Descrição (opcional)</p>
+          <p className="text-[11px] text-gray-500 mb-0.5">
+            {tipo === "Mobilidade" ? "Descrição (Passagens, Táxi, Uber, Estacionamento...)" : "Descrição (opcional)"}
+          </p>
           <input type="text" value={descricao} onChange={e => setDescricao(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            placeholder={tipo === "Mobilidade" ? "Ex: Uber até o cliente" : ""}
             className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
         </div>
       </div>
+
 
       {precisaRateio && (
         <div className="mb-2.5">
@@ -750,29 +836,32 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
         </div>
       )}
 
-      <p className="text-[11px] text-gray-500 mb-1">Comprovante (opcional)</p>
-      <div className="flex gap-1.5 mb-1.5">
-        <button onClick={() => camRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Foto do comprovante">📷 Foto</button>
-        <button onClick={() => galRef.current?.click()} className="flex-1 rounded-lg py-2 text-sm bg-amber-400" aria-label="Galeria">🖼️ Galeria</button>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px]"><span style={{ color: "#C62A2F" }}>* </span><span className="text-gray-500">Comprovante (obrigatório)</span></p>
+        <button onClick={() => setUsarIA(v => !v)} className="flex items-center gap-1.5">
+          <span className="text-[11px] font-medium" style={{ color: usarIA ? BTJ_NAVY : "#9C9C96" }}>✨ Preencher com IA</span>
+          <span className="relative inline-block w-8 h-[18px] rounded-full transition-colors" style={{ background: usarIA ? BTJ_BLUE : "#D8D6CE" }}>
+            <span className="absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all" style={{ left: usarIA ? "16px" : "2px" }} />
+          </span>
+        </button>
       </div>
       <div className="flex gap-1.5 mb-3">
-        <button onClick={() => camCupomRef.current?.click()} disabled={lendoCupom}
-          className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
-          {lendoCupom ? "⟳ lendo cupom..." : "✨ 📷 Ler cupom (IA)"}
+        <button onClick={() => camRef.current?.click()} disabled={lendoCupom}
+          className="flex-1 rounded-lg py-2.5 text-sm font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+          {lendoCupom ? "⟳ lendo..." : "📷 Tirar foto"}
         </button>
-        <button onClick={() => galCupomRef.current?.click()} disabled={lendoCupom}
-          className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
-          {lendoCupom ? "⟳..." : "✨ 🖼️ Ler cupom (IA)"}
+        <button onClick={() => galRef.current?.click()} disabled={lendoCupom}
+          className="flex-1 rounded-lg py-2.5 text-sm font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+          {lendoCupom ? "⟳..." : "🖼️ Da galeria"}
         </button>
       </div>
-      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], false); e.target.value = ""; }} />
-      <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], false); e.target.value = ""; }} />
-      <input ref={camCupomRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], true); e.target.value = ""; }} />
-      <input ref={galCupomRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], true); e.target.value = ""; }} />
+      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], usarIA); e.target.value = ""; }} />
+      <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], usarIA); e.target.value = ""; }} />
       {compNome && <p className="text-[10px] mb-3" style={{ color: "#0F6E56" }}>🧾 {compNome} — será enviado ao Drive ao salvar</p>}
+      {!compNome && <p className="text-[10px] mb-3" style={{ color: "#C62A2F" }}>⚠ Anexe a foto do comprovante pra poder salvar</p>}
 
       <div className="flex gap-2">
-        <button onClick={salvar} disabled={saving}
+        <button onClick={salvar} disabled={saving || !compNome}
           className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60"
           style={{ background: BTJ_BLUE }}>
           {saving ? "Salvando..." : "Salvar despesa"}
@@ -784,31 +873,29 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel
 }
 
 // ─── Tela: Importar Extrato do Tag (pedágio/estacionamento cobrado no tag) ────
-function ImportarExtrato({ carros, carroInicial, records, onDone, onCancel }) {
+function ImportarExtrato({ carros, carroInicial, records, onNovoCarro, onDone, onCancel }) {
   const [carro, setCarro] = useState(carroInicial);
-  const [carroOutro, setCarroOutro] = useState("");
+  const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
   const [passagens, setPassagens] = useState(null); // null = ainda não leu
   const [sel, setSel] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const galRef = useRef(null);
 
-  const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
-
   // Dias em que existe viagem de trabalho lançada para o carro deste extrato
   // (usado pra pré-marcar só as passagens que batem com um dia de trabalho).
   const diasComViagem = useMemo(() => {
     const s = new Set();
     (records || []).forEach(r => {
-      if ((r.carro || CARRO_PADRAO) === carroFinal) s.add(r.data);
+      if ((r.carro || CARRO_PADRAO) === carro) s.add(r.data);
     });
     return s;
-  }, [records, carroFinal]);
+  }, [records, carro]);
 
   async function lerExtrato(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro antes de importar."); return; }
+    if (carro === NOVO_CARRO_VALUE) { alert("Escolha ou cadastre um carro antes de importar."); return; }
     setLoading(true);
     try {
       let todas = [];
@@ -849,7 +936,7 @@ function ImportarExtrato({ carros, carroInicial, records, onDone, onCancel }) {
       const marcadas = passagens.filter((_, i) => sel[i]);
       for (const p of marcadas) {
         await apiSaveDespesa({
-          data: p.data, carro: carroFinal, tipo: "Pedágio",
+          data: p.data, carro, tipo: "Pedágio",
           valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
         });
       }
@@ -866,16 +953,19 @@ function ImportarExtrato({ carros, carroInicial, records, onDone, onCancel }) {
     <Card className="mt-2.5 p-3.5">
       <div className="mb-2.5">
         <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro deste extrato</p>
-        <select value={carro} onChange={e => { setCarro(e.target.value); saveLastCar(e.target.value); }}
+        <select value={carro} onChange={e => {
+            if (e.target.value === NOVO_CARRO_VALUE) { setMostrarCadastroCarro(true); return; }
+            setCarro(e.target.value); saveLastCar(e.target.value);
+          }}
           className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
           {carros.map(c => <option key={c} value={c}>{c}</option>)}
-          <option value="Outro (digitar)">Outro (digitar)</option>
+          <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
         </select>
-        {carro === "Outro (digitar)" && (
-          <input type="text" value={carroOutro} onChange={e => setCarroOutro(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-            placeholder="Ex: Fiat Argo ABC1D23"
-            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mt-2" />
+        {mostrarCadastroCarro && (
+          <CadastrarCarroModal
+            onCancel={() => setMostrarCadastroCarro(false)}
+            onSaved={(novoCarro) => { onNovoCarro(novoCarro); setCarro(novoCarro); saveLastCar(novoCarro); setMostrarCadastroCarro(false); }}
+          />
         )}
       </div>
 
@@ -922,7 +1012,7 @@ function ImportarExtrato({ carros, carroInicial, records, onDone, onCancel }) {
                   <p className="text-[10px] text-red-700 px-3 pb-2 -mt-1">⚠ Uma passagem igual (mesma data, local e valor) já está na planilha. Marque só se for outra passagem real.</p>
                 )}
                 {semViagem && (
-                  <p className="text-[10px] text-amber-700 px-3 pb-2 -mt-1">🚗 Não há viagem de trabalho lançada para {carroFinal} nesse dia. Marque só se for mesmo uso de trabalho.</p>
+                  <p className="text-[10px] text-amber-700 px-3 pb-2 -mt-1">🚗 Não há viagem de trabalho lançada para {carro} nesse dia. Marque só se for mesmo uso de trabalho.</p>
                 )}
               </div>
               );
@@ -1011,7 +1101,7 @@ function GestaoDespesas({ titulo, icone, despesas, carros, onChange, onAdd, addL
                     <div key={d.id} className="border-b border-gray-50 last:border-b-0">
                       {edit?.id === d.id ? (
                         <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
-                          <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>Editando · {d.tipo} · {(d.carro || "").split(" ")[0]}</p>
+                          <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>Editando · {d.tipo}{d.tipo === "Pedágio" && d.carro ? ` · ${d.carro.split(" ")[0]}` : ""}</p>
                           <div className="flex gap-1.5 mb-2">
                             <div className="flex-1">
                               <p className="text-[9px] text-gray-500 mb-0.5">Data</p>
@@ -1038,7 +1128,7 @@ function GestaoDespesas({ titulo, icone, despesas, carros, onChange, onAdd, addL
                         <button onClick={() => setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data })}
                           className="w-full flex items-center justify-between px-3.5 py-2 text-left">
                           <div className="min-w-0">
-                            <p className="text-xs text-gray-800">{formatDateShort(d.data)} · {(d.carro || "").split(" ")[0]}{d.descricao ? ` · ${d.descricao}` : ""}</p>
+                            <p className="text-xs text-gray-800">{formatDateShort(d.data)}{d.tipo === "Pedágio" && d.carro ? ` · ${d.carro.split(" ")[0]}` : ""}{d.descricao ? ` · ${d.descricao}` : ""}</p>
                             <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                               <span className="text-[10px] px-1.5 py-0.5 rounded"
                                 style={{ background: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).bg, color: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).fg }}>
@@ -1074,12 +1164,20 @@ export default function App() {
   const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(periodKey(todayISO()));
+  const [pedagioAberto, setPedagioAberto] = useState(null); // data (iso) do dia com pedágios expandidos
   const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
 
   // Formulário (apontamento do dia)
   const [editingId, setEditingId] = useState(null);
   const [fData, setFData] = useState(todayISO());
   const [fCarro, setFCarro] = useState(loadLastCar());
+  const [mostrarCadastroCarroPrincipal, setMostrarCadastroCarroPrincipal] = useState(false);
+
+  // Compartilhado por todas as telas com seletor de carro: adiciona o carro
+  // recém-cadastrado na config local, sem precisar recarregar tudo.
+  function handleNovoCarro(novoCarro) {
+    setConfig(c => ({ ...c, carros: [...(c.carros || []), novoCarro] }));
+  }
   const [fOrigem, setFOrigem] = useState("");
   const [fOrigemGps, setFOrigemGps] = useState(false);
   const [fDestino, setFDestino] = useState("");
@@ -1517,12 +1615,26 @@ export default function App() {
                 <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
                 <select
                   value={fCarro}
-                  onChange={e => { setFCarro(e.target.value); saveLastCar(e.target.value); }}
+                  onChange={e => {
+                    if (e.target.value === NOVO_CARRO_VALUE) { setMostrarCadastroCarroPrincipal(true); return; }
+                    setFCarro(e.target.value); saveLastCar(e.target.value);
+                  }}
                   className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white font-medium"
                   style={{ color: BTJ_NAVY }}
                 >
                   {(config.carros || DEFAULT_CONFIG.carros).map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
                 </select>
+                {mostrarCadastroCarroPrincipal && (
+                  <CadastrarCarroModal
+                    onCancel={() => setMostrarCadastroCarroPrincipal(false)}
+                    onSaved={(novoCarro) => {
+                      handleNovoCarro(novoCarro);
+                      setFCarro(novoCarro); saveLastCar(novoCarro);
+                      setMostrarCadastroCarroPrincipal(false);
+                    }}
+                  />
+                )}
               </div>
               <div className="flex gap-2 mb-2.5">
                 <div className="flex-1">
@@ -1740,6 +1852,7 @@ export default function App() {
             carroInicial={fCarro}
             limites={config.limites || DEFAULT_CONFIG.limites}
             faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, SOLICITANTE)}
+            onNovoCarro={handleNovoCarro}
             onSaved={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
           />
@@ -1751,6 +1864,7 @@ export default function App() {
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
             records={records}
+            onNovoCarro={handleNovoCarro}
             onDone={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
           />
@@ -1874,17 +1988,33 @@ export default function App() {
                                         {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
                                       </span>
                                     </div>
-                                    <div className="flex items-center justify-between mt-0.5">
-                                      <span className="text-[10px] text-gray-400">
+                                    <div className="flex items-center justify-between mt-0.5 gap-2">
+                                      <span className="text-[10px] text-gray-400 truncate">
                                         🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial?.toLocaleString("pt-BR") ?? "—"} → {r.kmFinal?.toLocaleString("pt-BR") ?? "—"}
                                       </span>
-                                      {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[45%]">{r.observacao}</span>}
+                                      {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[35%] shrink-0">{r.observacao}</span>}
                                     </div>
-                                    {s.pedagioPorDia[r.data] > 0 && (
-                                      <div className="flex items-center gap-1 mt-1">
-                                        <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
-                                          🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
-                                        </span>
+                                    {(s.pedagioItensPorDia[r.data] || []).length > 0 && (
+                                      <div className="mt-1">
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); setPedagioAberto(pedagioAberto === r.data ? null : r.data); }}
+                                          className="flex items-center gap-1"
+                                        >
+                                          <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
+                                            🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} · {s.pedagioItensPorDia[r.data].length} passage{s.pedagioItensPorDia[r.data].length > 1 ? "ns" : "m"}
+                                          </span>
+                                          <span className="text-[9px]" style={{ color: "#854F0B" }}>{pedagioAberto === r.data ? "▲" : "▼"}</span>
+                                        </button>
+                                        {pedagioAberto === r.data && (
+                                          <div className="mt-1 ml-1 pl-2 space-y-0.5" style={{ borderLeft: "2px solid #F5C97A" }}>
+                                            {s.pedagioItensPorDia[r.data].map((p, i) => (
+                                              <div key={i} className="flex items-center justify-between">
+                                                <span className="text-[10px] text-gray-500">{p.local}</span>
+                                                <span className="text-[10px] text-gray-500">R$ {p.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
