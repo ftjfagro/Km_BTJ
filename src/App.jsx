@@ -146,6 +146,22 @@ function loadLastCar() {
 function saveLastCar(c) {
   localStorage.setItem(KEY_LAST_CAR, c);
 }
+
+// ─── Sessão de login (fica salva pra sempre, até "Sair" explícito) ───────────
+const KEY_SESSAO = "km_sessao_v1";
+function loadSessao() {
+  try {
+    const raw = localStorage.getItem(KEY_SESSAO);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveSessao(colaborador) {
+  localStorage.setItem(KEY_SESSAO, JSON.stringify(colaborador));
+}
+function limparSessao() {
+  localStorage.removeItem(KEY_SESSAO);
+}
+
 const KEY_PHOTO_QUEUE = "km_fotos_pendentes";
 
 function loadRecords() {
@@ -182,11 +198,22 @@ function persistPhotoQueue(q) {
 }
 
 // ─── API (Apps Script) ────────────────────────────────────────────────────────
-async function apiFetchConfig() {
+async function apiLogin(email, senha) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "config" }),
+    body: JSON.stringify({ action: "login", email, senha }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Não foi possível entrar.");
+  return data.colaborador;
+}
+
+async function apiFetchConfig(colaborador) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "config", colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao carregar config");
@@ -215,11 +242,11 @@ async function apiSaveDespesa(d) {
   return data;
 }
 
-async function apiAddCarro(carro) {
+async function apiAddCarro(carro, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "addCarro", carro }),
+    body: JSON.stringify({ action: "addCarro", carro, colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao cadastrar carro");
@@ -248,11 +275,11 @@ async function apiDeleteDespesa(id) {
   return data;
 }
 
-async function apiListDespesas() {
+async function apiListDespesas(colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "listDespesas" }),
+    body: JSON.stringify({ action: "listDespesas", colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao listar despesas");
@@ -292,18 +319,18 @@ async function apiOcrExtrato(base64) {
   return data.passagens || [];
 }
 
-async function apiList() {
+async function apiList(colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "list", colaborador: SOLICITANTE }),
+    body: JSON.stringify({ action: "list", colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao listar lançamentos");
   return data.lancamentos || [];
 }
 
-async function apiSave(record) {
+async function apiSave(record, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -315,7 +342,7 @@ async function apiSave(record) {
       kmInicial: record.kmInicial ?? "",
       kmFinal: record.kmFinal ?? "",
       observacao: record.observacao || "",
-      colaborador: SOLICITANTE,
+      colaborador,
       carro: record.carro || CARRO_PADRAO,
     }),
   });
@@ -371,13 +398,13 @@ function gpsCidade() {
 }
 
 // ─── Export Excel (formato corporativo preservado) ────────────────────────────
-function exportToExcel(records, mesLabel, taxas, colaboradores) {
+function exportToExcel(records, mesLabel, taxas, colaboradores, solicitante) {
   const sorted = [...records].sort((a, b) => a.data.localeCompare(b.data));
   const wb = XLSX.utils.book_new();
   const rows = [
     ["", "RELATÓRIO DE DESPESAS"],
     [], [],
-    ["", "Solicitante", "", SOLICITANTE],
+    ["", "Solicitante", "", solicitante],
     ["", "Inserir CPF", "", CPF.replace(/\D/g, "")],
     ["", "Setor", "", SETOR],
     ["", "Referência", "", mesLabel],
@@ -388,7 +415,7 @@ function exportToExcel(records, mesLabel, taxas, colaboradores) {
   let totalReais = 0;
   sorted.forEach(r => {
     const km = Math.max(0, (r.kmFinal || 0) - (r.kmInicial || 0));
-    const taxa = taxaVigente(taxas, colaboradores, SOLICITANTE, r.data);
+    const taxa = taxaVigente(taxas, colaboradores, solicitante, r.data);
     const total = km * taxa;
     totalReais += total;
     rows.push([
@@ -457,10 +484,10 @@ function kmOf(r) {
 function isOpen(r) {
   return r.kmInicial == null || r.kmFinal == null;
 }
-function monthSummary(records, key, taxas, colaboradores, despesas) {
+function monthSummary(records, key, taxas, colaboradores, solicitante, despesas) {
   const recs = records.filter(r => periodKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
-  const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, colaboradores, SOLICITANTE, r.data), 0);
+  const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, colaboradores, solicitante, r.data), 0);
 
   // Pedágio do período, e por dia (soma todos os carros daquele dia numa linha só).
   const pedagioPorDia = {};
@@ -568,6 +595,7 @@ const TIPO_COR = {
 };
 
 const NOVO_CARRO_VALUE = "__novo_carro__";
+const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 
 // Input de valor "estilo caixa registradora": digita só números, as duas
 // últimas casas viram centavos automaticamente (ex: 1000 -> R$ 10,00).
@@ -588,7 +616,7 @@ function ValorInput({ digits, onDigitsChange, className, placeholder }) {
 }
 
 
-function CadastrarCarroModal({ onSaved, onCancel }) {
+function CadastrarCarroModal({ colaborador, onSaved, onCancel }) {
   const [modelo, setModelo] = useState("");
   const [placa, setPlaca] = useState("");
   const [saving, setSaving] = useState(false);
@@ -599,7 +627,7 @@ function CadastrarCarroModal({ onSaved, onCancel }) {
     const carroCompleto = `${modelo.trim()} ${placa.trim().toUpperCase()}`;
     setSaving(true);
     try {
-      await apiAddCarro(carroCompleto);
+      await apiAddCarro(carroCompleto, colaborador);
       onSaved(carroCompleto);
     } catch (e) {
       alert("Erro ao cadastrar carro: " + (e.message || ""));
@@ -634,7 +662,7 @@ function CadastrarCarroModal({ onSaved, onCancel }) {
   );
 }
 
-function DespesaManual({ carros, carroInicial, limites, faixa, onNovoCarro, onSaved, onCancel }) {
+function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, onNovoCarro, onSaved, onCancel }) {
   const [data, setData] = useState(todayISO());
   const [carro, setCarro] = useState(carroInicial);
   const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
@@ -717,6 +745,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onNovoCarro, onSa
         rateioCom: precisaRateio ? comQuem : "",
         valorTotalPago,
         justificativa: (excede && escolhaExcedente === "total") ? justificativa.trim() : "",
+        colaborador,
       });
       onSaved();
     } catch (e) {
@@ -761,6 +790,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onNovoCarro, onSa
 
       {mostrarCadastroCarro && (
         <CadastrarCarroModal
+          colaborador={colaborador}
           onCancel={() => setMostrarCadastroCarro(false)}
           onSaved={(novoCarro) => { onNovoCarro(novoCarro); setCarro(novoCarro); setMostrarCadastroCarro(false); }}
         />
@@ -873,7 +903,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, onNovoCarro, onSa
 }
 
 // ─── Tela: Importar Extrato do Tag (pedágio/estacionamento cobrado no tag) ────
-function ImportarExtrato({ carros, carroInicial, records, onNovoCarro, onDone, onCancel }) {
+function ImportarExtrato({ carros, carroInicial, records, colaborador, onNovoCarro, onDone, onCancel }) {
   const [carro, setCarro] = useState(carroInicial);
   const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
   const [passagens, setPassagens] = useState(null); // null = ainda não leu
@@ -938,6 +968,7 @@ function ImportarExtrato({ carros, carroInicial, records, onNovoCarro, onDone, o
         await apiSaveDespesa({
           data: p.data, carro, tipo: "Pedágio",
           valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
+          colaborador,
         });
       }
       alert(`${marcadas.length} lançamento(s) do tag lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
@@ -963,6 +994,7 @@ function ImportarExtrato({ carros, carroInicial, records, onNovoCarro, onDone, o
         </select>
         {mostrarCadastroCarro && (
           <CadastrarCarroModal
+          colaborador={colaborador}
             onCancel={() => setMostrarCadastroCarro(false)}
             onSaved={(novoCarro) => { onNovoCarro(novoCarro); setCarro(novoCarro); saveLastCar(novoCarro); setMostrarCadastroCarro(false); }}
           />
@@ -1296,8 +1328,71 @@ function GestaoPedagios({ despesas, records, onChange, onAdd }) {
   );
 }
 
+// ─── Tela de Login ─────────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+  const [entrando, setEntrando] = useState(false);
+
+  async function entrar() {
+    setErro("");
+    if (!email.trim()) { setErro("Informe o e-mail corporativo."); return; }
+    if (senha.trim().length !== 4) { setErro("A senha são os 4 primeiros números do seu CPF."); return; }
+    setEntrando(true);
+    try {
+      const colaborador = await apiLogin(email.trim(), senha.trim());
+      saveSessao(colaborador);
+      onLogin(colaborador);
+    } catch (e) {
+      setErro(e.message || "Não foi possível entrar.");
+    } finally {
+      setEntrando(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-5" style={{ background: BTJ_NAVY }}>
+      <div className="w-full max-w-xs">
+        <div className="flex justify-center mb-6">
+          <div className="bg-white px-3 py-2 rounded-md">
+            <img src={logoUrl} alt="BTJ" className="h-9" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;font-size:20px;">BTJ</span>'; }} />
+          </div>
+        </div>
+        <p className="text-center text-white text-sm mb-6" style={{ color: BTJ_LIGHT }}>Km_BTJ · entre com seu e-mail corporativo</p>
+
+        <div className="bg-white rounded-xl p-4">
+          <p className="text-[11px] text-gray-500 mb-0.5">E-mail corporativo</p>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") entrar(); }}
+            placeholder="voce@empresa.com.br" autoCapitalize="none" autoCorrect="off"
+            className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm mb-3" />
+
+          <p className="text-[11px] text-gray-500 mb-0.5">Senha (4 primeiros números do seu CPF)</p>
+          <input type="password" inputMode="numeric" maxLength={4} value={senha} onChange={e => setSenha(e.target.value.replace(/\D/g, ""))}
+            onKeyDown={e => { if (e.key === "Enter") entrar(); }}
+            placeholder="••••"
+            className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm mb-3 tracking-widest" />
+
+          {erro && <p className="text-[12px] mb-3" style={{ color: "#C62A2F" }}>⚠ {erro}</p>}
+
+          <button onClick={entrar} disabled={entrando}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+            style={{ background: BTJ_BLUE }}>
+            {entrando ? "Entrando..." : "Entrar"}
+          </button>
+        </div>
+        <p className="text-center text-[11px] mt-4" style={{ color: BTJ_LIGHT }}>
+          Depois de entrar, o app fica logado neste aparelho.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [usuario, setUsuario] = useState(loadSessao());
   const [records, setRecords] = useState([]);
   const [config, setConfig] = useState(loadCachedConfig());
   const [screen, setScreen] = useState("home"); // home | resumos | despesa | extrato | despMenu | despPedagio | despOutras
@@ -1344,12 +1439,6 @@ export default function App() {
     updateSWRef.current = registerSW({
       onNeedRefresh() { setNeedRefresh(true); },
     });
-    setRecords(loadRecords());
-    apiFetchConfig()
-      .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
-      .catch(() => {});
-    pullAndReconcile(); // baixa da planilha (fonte mestra) e alinha o local
-    refreshDespesas();
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener("online", on);
@@ -1357,19 +1446,29 @@ export default function App() {
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, []);
 
+  useEffect(() => {
+    if (!usuario) return;
+    setRecords(loadRecords());
+    apiFetchConfig(usuario.nome)
+      .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
+      .catch(() => {});
+    pullAndReconcile(); // baixa da planilha (fonte mestra) e alinha o local
+    refreshDespesas();
+  }, [usuario]);
+
   // Baixa os lançamentos da planilha e reconcilia com o local.
   // Regra: pendentes de envio (synced=false) têm prioridade e são preservados;
   // para todo o resto, a planilha é a fonte da verdade.
   async function refreshDespesas() {
-    if (!navigator.onLine) return;
-    try { setDespesas(await apiListDespesas()); } catch {}
+    if (!navigator.onLine || !usuario) return;
+    try { setDespesas(await apiListDespesas(usuario.nome)); } catch {}
   }
 
   async function pullAndReconcile() {
-    if (!navigator.onLine) return;
+    if (!navigator.onLine || !usuario) return;
     try {
       setSyncStatus("syncing");
-      const remote = await apiList();
+      const remote = await apiList(usuario.nome);
       const local = loadRecords();
       // Rede de segurança: guarda uma cópia do estado local ANTES de qualquer
       // reconciliação. Se algo der errado, nada se perde de verdade.
@@ -1458,6 +1557,11 @@ export default function App() {
     resyncUnsynced();
   }, [online]);
 
+  // Depois daqui não tem mais nenhum hook — pode sair sem violar a regra dos hooks.
+  if (!usuario) {
+    return <LoginScreen onLogin={setUsuario} />;
+  }
+
   async function processPhotoQueue() {
     let q = loadPhotoQueue();
     if (!q.length) return;
@@ -1479,7 +1583,7 @@ export default function App() {
     const pending = loadRecords().filter(r => r.synced === false);
     for (const r of pending) {
       try {
-        await apiSave(r);
+        await apiSave(r, usuario.nome);
         mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
       } catch { /* fica pra próxima */ }
     }
@@ -1515,7 +1619,7 @@ export default function App() {
     if (!rec) return;
     try {
       setSyncStatus("syncing");
-      await apiSave(rec);
+      await apiSave(rec, usuario.nome);
       mutateRecords(recs => recs.map(x => x.id === rec.id ? { ...x, synced: true } : x));
       setSyncStatus("ok");
     } catch {
@@ -1613,14 +1717,14 @@ export default function App() {
   // ── Derivados ──
   const openDays = records.filter(isOpen).sort((a, b) => b.data.localeCompare(a.data));
   const curKey = periodKey(todayISO());
-  const cur = monthSummary(records, curKey, config.taxas, config.colaboradores, despesas);
+  const cur = monthSummary(records, curKey, config.taxas, config.colaboradores, usuario.nome, despesas);
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
   const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 3);
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
 
-  const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
+
 
   // ── Edição inline na tela de resumos ──
   function openInline(r) {
@@ -1657,10 +1761,14 @@ export default function App() {
               <img src={logoUrl} alt="BTJ" className="h-5" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>'; }} />
             </div>
             <div>
-              <p className="text-sm font-semibold leading-tight">Felipe Torquato</p>
+              <p className="text-sm font-semibold leading-tight">{usuario.nome.split(" ").slice(0, 2).join(" ")}</p>
               <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
-                {SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, todayISO()).toFixed(2).replace(".", ",")}/km
+                {usuario.setor || SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, usuario.nome, todayISO()).toFixed(2).replace(".", ",")}/km
               </p>
+              <button onClick={() => { if (confirm("Sair da conta?")) { limparSessao(); setUsuario(null); } }}
+                className="text-[10px] underline" style={{ color: BTJ_LIGHT }}>
+                Sair
+              </button>
             </div>
           </div>
           {screen === "home" ? (
@@ -1771,6 +1879,7 @@ export default function App() {
                 </select>
                 {mostrarCadastroCarroPrincipal && (
                   <CadastrarCarroModal
+                    colaborador={usuario.nome}
                     onCancel={() => setMostrarCadastroCarroPrincipal(false)}
                     onSaved={(novoCarro) => {
                       handleNovoCarro(novoCarro);
@@ -1860,7 +1969,7 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <span className="text-[11px]" style={{ color: "#185FA5" }}>Saldo do dia</span>
                     <span className="text-sm font-semibold" style={{ color: "#0C447C" }}>
-                      {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                      {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                     </span>
                   </div>
                 </div>
@@ -1993,7 +2102,8 @@ export default function App() {
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
             limites={config.limites || DEFAULT_CONFIG.limites}
-            faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, SOLICITANTE)}
+            faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, usuario.nome)}
+            colaborador={usuario.nome}
             onNovoCarro={handleNovoCarro}
             onSaved={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
@@ -2006,6 +2116,7 @@ export default function App() {
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
             records={records}
+            colaborador={usuario.nome}
             onNovoCarro={handleNovoCarro}
             onDone={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
@@ -2040,7 +2151,7 @@ export default function App() {
                 <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
               )}
               {monthKeys.map(key => {
-                const s = monthSummary(records, key, config.taxas, config.colaboradores, despesas);
+                const s = monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas);
                 const isCur = key === curKey;
                 const opened = expandedMonth === key;
                 return (
@@ -2127,7 +2238,7 @@ export default function App() {
                                         {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
                                       </span>
                                       <span className="text-xs text-gray-600 font-medium">
-                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
                                       </span>
                                     </div>
                                     <div className="flex items-center justify-between mt-0.5 gap-2">
