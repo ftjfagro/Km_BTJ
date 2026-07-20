@@ -18,10 +18,10 @@ const DEFAULT_CONFIG = {
   destinos: ["Sud", "Ilha", "RP", "SP", "Campinas", "Jundiaí", "Ribeirão", "VCP", "Foods", "Sud Foods", "Foods RP", "Foods Prudente", "Prudente"],
   carros: ["Corolla FSZ8B48", "Outlander FXJ5336"],
   taxas: [
-    { colaborador: SOLICITANTE, taxa: 1.12, vigenteDesde: "2026-01-01" },
-    { colaborador: "Geral", taxa: 0.88, vigenteDesde: "2026-01-01" },
+    { categoriaKm: "Viajante", taxa: 1.12, vigenteDesde: "2025-12-31" },
+    { categoriaKm: "Geral", taxa: 0.88, vigenteDesde: "2025-12-31" },
   ],
-  colaboradores: [{ nome: SOLICITANTE, faixa: "Aberto", setor: "Diretor", cpf: "" }],
+  colaboradores: [{ nome: SOLICITANTE, categoriaKm: "Viajante", faixa: "Aberto", setor: "Diretor", cpf: "" }],
   limites: [],
 };
 const CARRO_PADRAO = "Corolla FSZ8B48";
@@ -90,19 +90,22 @@ function monthLabelFromKey(key) {
 }
 
 // ─── Taxa vigente (mesma regra do Apps Script, no cliente) ────────────────────
-function taxaVigente(taxas, colaborador, isoDate) {
+function taxaVigente(taxas, colaboradores, colaborador, isoDate) {
   const d = parseISO(isoDate);
-  function melhor(nome) {
+  const c = (colaboradores || []).find(c => String(c.nome).toLowerCase() === String(colaborador).toLowerCase());
+  const categoriaKm = c ? c.categoriaKm : "";
+  function melhor(cat) {
+    if (!cat) return null;
     let mTaxa = null, mData = null;
     for (const t of taxas) {
-      if (String(t.colaborador).toLowerCase() !== nome.toLowerCase()) continue;
+      if (String(t.categoriaKm).toLowerCase() !== cat.toLowerCase()) continue;
       const v = typeof t.vigenteDesde === "string" ? new Date(t.vigenteDesde) : new Date(t.vigenteDesde);
       if (v > d) continue;
       if (mData === null || v > mData) { mData = v; mTaxa = Number(t.taxa); }
     }
     return mTaxa;
   }
-  return melhor(colaborador) ?? melhor("Geral") ?? 0.88;
+  return melhor(categoriaKm) ?? melhor("Geral") ?? 0.88;
 }
 
 // Categorias de despesa que podem ser rateadas entre várias pessoas (e que
@@ -357,7 +360,7 @@ function gpsCidade() {
 }
 
 // ─── Export Excel (formato corporativo preservado) ────────────────────────────
-function exportToExcel(records, mesLabel, taxas) {
+function exportToExcel(records, mesLabel, taxas, colaboradores) {
   const sorted = [...records].sort((a, b) => a.data.localeCompare(b.data));
   const wb = XLSX.utils.book_new();
   const rows = [
@@ -374,7 +377,7 @@ function exportToExcel(records, mesLabel, taxas) {
   let totalReais = 0;
   sorted.forEach(r => {
     const km = Math.max(0, (r.kmFinal || 0) - (r.kmInicial || 0));
-    const taxa = taxaVigente(taxas, SOLICITANTE, r.data);
+    const taxa = taxaVigente(taxas, colaboradores, SOLICITANTE, r.data);
     const total = km * taxa;
     totalReais += total;
     rows.push([
@@ -443,10 +446,10 @@ function kmOf(r) {
 function isOpen(r) {
   return r.kmInicial == null || r.kmFinal == null;
 }
-function monthSummary(records, key, taxas, despesas) {
+function monthSummary(records, key, taxas, colaboradores, despesas) {
   const recs = records.filter(r => periodKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
-  const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, SOLICITANTE, r.data), 0);
+  const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, colaboradores, SOLICITANTE, r.data), 0);
 
   // Pedágio do período, e por dia (soma todos os carros daquele dia numa linha só).
   const pedagioPorDia = {};
@@ -1368,7 +1371,7 @@ export default function App() {
   // ── Derivados ──
   const openDays = records.filter(isOpen).sort((a, b) => b.data.localeCompare(a.data));
   const curKey = periodKey(todayISO());
-  const cur = monthSummary(records, curKey, config.taxas, despesas);
+  const cur = monthSummary(records, curKey, config.taxas, config.colaboradores, despesas);
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
@@ -1414,7 +1417,7 @@ export default function App() {
             <div>
               <p className="text-sm font-semibold leading-tight">Felipe Torquato</p>
               <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
-                {SETOR} · R$ {taxaVigente(config.taxas, SOLICITANTE, todayISO()).toFixed(2).replace(".", ",")}/km
+                {SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, todayISO()).toFixed(2).replace(".", ",")}/km
               </p>
             </div>
           </div>
@@ -1601,7 +1604,7 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <span className="text-[11px]" style={{ color: "#185FA5" }}>Saldo do dia</span>
                     <span className="text-sm font-semibold" style={{ color: "#0C447C" }}>
-                      {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, SOLICITANTE, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                      {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                     </span>
                   </div>
                 </div>
@@ -1781,7 +1784,7 @@ export default function App() {
                 <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
               )}
               {monthKeys.map(key => {
-                const s = monthSummary(records, key, config.taxas, despesas);
+                const s = monthSummary(records, key, config.taxas, config.colaboradores, despesas);
                 const isCur = key === curKey;
                 const opened = expandedMonth === key;
                 return (
@@ -1868,7 +1871,7 @@ export default function App() {
                                         {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
                                       </span>
                                       <span className="text-xs text-gray-600 font-medium">
-                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, SOLICITANTE, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
                                       </span>
                                     </div>
                                     <div className="flex items-center justify-between mt-0.5">
@@ -1892,7 +1895,7 @@ export default function App() {
                         ))}
                         <div className="px-3.5 py-2">
                           <button
-                            onClick={() => exportToExcel(s.recs.filter(r => !isOpen(r)), monthLabelFromKey(key), config.taxas)}
+                            onClick={() => exportToExcel(s.recs.filter(r => !isOpen(r)), monthLabelFromKey(key), config.taxas, config.colaboradores)}
                             className="w-full rounded-lg py-2 text-xs font-medium text-white"
                             style={{ background: "#16a34a" }}
                           >
