@@ -21,6 +21,8 @@ const DEFAULT_CONFIG = {
     { colaborador: SOLICITANTE, taxa: 1.12, vigenteDesde: "2026-01-01" },
     { colaborador: "Geral", taxa: 0.88, vigenteDesde: "2026-01-01" },
   ],
+  colaboradores: [{ nome: SOLICITANTE, faixa: "Aberto", setor: "Diretor", cpf: "" }],
+  limites: [],
 };
 const CARRO_PADRAO = "Corolla FSZ8B48";
 
@@ -101,6 +103,32 @@ function taxaVigente(taxas, colaborador, isoDate) {
     return mTaxa;
   }
   return melhor(colaborador) ?? melhor("Geral") ?? 0.88;
+}
+
+// Categorias de despesa que podem ser rateadas entre várias pessoas (e que
+// têm limite de reembolso por pessoa, definido por faixa do colaborador).
+const CATEGORIAS_RATEAVEIS = ["Alimentação", "Hotel", "Outros"];
+
+// Acha a faixa (Aberto/A/B) do colaborador na config já carregada.
+function faixaDoColaborador(colaboradores, nome) {
+  const c = (colaboradores || []).find(c => String(c.nome).toLowerCase() === String(nome).toLowerCase());
+  return c ? String(c.faixa || "") : "";
+}
+
+// Limite por pessoa vigente pra uma categoria + faixa numa data.
+// Retorna null se não houver faixa ou não houver limite cadastrado (sem trava).
+function limiteVigente(limites, faixa, categoria, isoDate) {
+  if (!faixa) return null;
+  const d = parseISO(isoDate);
+  let mLimite = null, mData = null;
+  for (const l of (limites || [])) {
+    if (String(l.categoria).toLowerCase() !== String(categoria).toLowerCase()) continue;
+    if (String(l.faixa).toLowerCase() !== faixa.toLowerCase()) continue;
+    const v = typeof l.vigenteDesde === "string" ? new Date(l.vigenteDesde) : new Date(l.vigenteDesde);
+    if (v > d) continue;
+    if (mData === null || v > mData) { mData = v; mLimite = Number(l.limite); }
+  }
+  return mLimite;
 }
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
@@ -416,15 +444,15 @@ function isOpen(r) {
   return r.kmInicial == null || r.kmFinal == null;
 }
 function monthSummary(records, key, taxas, despesas) {
-  const recs = records.filter(r => monthKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
+  const recs = records.filter(r => periodKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
   const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, SOLICITANTE, r.data), 0);
 
-  // Pedágio do mês, e por dia (soma todos os carros daquele dia numa linha só).
+  // Pedágio do período, e por dia (soma todos os carros daquele dia numa linha só).
   const pedagioPorDia = {};
   (despesas || []).forEach(d => {
     if ((d.tipo || "").toLowerCase().indexOf("ped") !== 0) return;
-    if (monthKey(d.data) !== key) return;
+    if (periodKey(d.data) !== key) return;
     pedagioPorDia[d.data] = (pedagioPorDia[d.data] || 0) + (Number(d.valor) || 0);
   });
   const pedagioMes = Object.values(pedagioPorDia).reduce((s, v) => s + v, 0);
@@ -523,7 +551,7 @@ const TIPO_COR = {
   "Outros": { bg: "#F1EFE8", fg: "#444441" },
 };
 
-function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
+function DespesaManual({ carros, carroInicial, limites, faixa, onSaved, onCancel }) {
   const [data, setData] = useState(todayISO());
   const [carro, setCarro] = useState(carroInicial);
   const [carroOutro, setCarroOutro] = useState("");
@@ -541,6 +569,21 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
   const carroFinal = carro === "Outro (digitar)" ? carroOutro.trim() : carro;
 
   const [lendoCupom, setLendoCupom] = useState(false);
+
+  // ─── Rateio ────────────────────────────────────────────────────────────
+  const [pessoas, setPessoas] = useState(1);
+  const [comQuem, setComQuem] = useState("");
+  const [escolhaExcedente, setEscolhaExcedente] = useState(null); // null | "elegivel" | "total"
+  const [justificativa, setJustificativa] = useState("");
+
+  const precisaRateio = CATEGORIAS_RATEAVEIS.includes(tipo);
+  const limiteAplicavel = precisaRateio ? limiteVigente(limites, faixa, tipo, data) : null;
+  const nPessoas = Math.max(1, Number(pessoas) || 1);
+  const valorNum = Number(valor) || 0;
+  const valorPorPessoa = precisaRateio && valorNum > 0 ? valorNum / nPessoas : null;
+  const excede = limiteAplicavel != null && valorPorPessoa != null && valorPorPessoa > limiteAplicavel + 0.005;
+
+  useEffect(() => { setEscolhaExcedente(null); setJustificativa(""); }, [tipo, valor, pessoas]);
 
   async function pickComprovante(file, lerIA) {
     if (!file) return;
@@ -571,11 +614,27 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
   async function salvar() {
     if (!valor || Number(valor) <= 0) { alert("Informe o valor da despesa."); return; }
     if (carro === "Outro (digitar)" && !carroOutro.trim()) { alert("Digite o carro (apelido/placa)."); return; }
+    if (excede && !escolhaExcedente) {
+      alert(`O valor por pessoa (R$ ${valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}) passa do limite de R$ ${limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Escolha uma das opções abaixo antes de salvar.`);
+      return;
+    }
+    if (excede && escolhaExcedente === "total" && !justificativa.trim()) {
+      alert("Para registrar o valor total acima do limite, escreva uma justificativa.");
+      return;
+    }
+    const valorTotalPago = Number(valor);
+    const valorFinal = (excede && escolhaExcedente === "elegivel")
+      ? Number((limiteAplicavel * nPessoas).toFixed(2))
+      : valorTotalPago;
     setSaving(true);
     try {
       await apiSaveDespesa({
-        data, carro: carroFinal, tipo, valor: Number(valor),
+        data, carro: carroFinal, tipo, valor: valorFinal,
         descricao, comprovanteImage: compB64 || undefined, origem: "manual",
+        pessoasRateio: precisaRateio ? nPessoas : 1,
+        rateioCom: precisaRateio ? comQuem : "",
+        valorTotalPago,
+        justificativa: (excede && escolhaExcedente === "total") ? justificativa.trim() : "",
       });
       onSaved();
     } catch (e) {
@@ -635,6 +694,58 @@ function DespesaManual({ carros, carroInicial, onSaved, onCancel }) {
             className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
         </div>
       </div>
+
+      {precisaRateio && (
+        <div className="mb-2.5">
+          <div className="flex gap-2">
+            <div className="w-24">
+              <p className="text-[11px] text-gray-500 mb-0.5">Rateado entre</p>
+              <input type="number" min="1" inputMode="numeric" value={pessoas}
+                onChange={e => setPessoas(e.target.value === "" ? "" : Math.max(1, Number(e.target.value)))}
+                onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center" />
+            </div>
+            <div className="flex-1">
+              <p className="text-[11px] text-gray-500 mb-0.5">Com quem? (colega, cliente...)</p>
+              <input type="text" value={comQuem} onChange={e => setComQuem(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                placeholder="opcional" className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+            </div>
+          </div>
+          {nPessoas > 1 && valorPorPessoa != null && (
+            <p className="text-[10px] text-gray-400 mt-1">
+              R$ {valorNum.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ÷ {nPessoas} pessoas = R$ {valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} por pessoa
+              {limiteAplicavel != null && ` (limite: R$ ${limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {excede && (
+        <div className="rounded-lg p-3 mb-2.5" style={{ background: "#FEF3E2", border: "1px solid #F5C97A" }}>
+          <p className="text-xs font-medium mb-2" style={{ color: "#854F0B" }}>
+            ⚠ R$ {valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} por pessoa passa do limite de R$ {limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Como quer registrar?
+          </p>
+          <div className="flex gap-1.5 mb-2">
+            <button onClick={() => setEscolhaExcedente("elegivel")}
+              className="flex-1 rounded-lg py-1.5 text-xs font-medium"
+              style={escolhaExcedente === "elegivel" ? { background: BTJ_BLUE, color: "#fff" } : { background: "#fff", border: "1px solid #F5C97A", color: "#854F0B" }}>
+              Só o elegível (R$ {(limiteAplicavel * nPessoas).toLocaleString("pt-BR", { minimumFractionDigits: 2 })})
+            </button>
+            <button onClick={() => setEscolhaExcedente("total")}
+              className="flex-1 rounded-lg py-1.5 text-xs font-medium"
+              style={escolhaExcedente === "total" ? { background: BTJ_BLUE, color: "#fff" } : { background: "#fff", border: "1px solid #F5C97A", color: "#854F0B" }}>
+              Valor total (R$ {valorNum.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})
+            </button>
+          </div>
+          {escolhaExcedente === "total" && (
+            <input type="text" value={justificativa} onChange={e => setJustificativa(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+              placeholder="Justificativa do valor acima do limite..."
+              className="w-full border rounded-lg px-2 py-1.5 text-xs" style={{ borderColor: "#F5C97A" }} />
+          )}
+        </div>
+      )}
 
       <p className="text-[11px] text-gray-500 mb-1">Comprovante (opcional)</p>
       <div className="flex gap-1.5 mb-1.5">
@@ -959,7 +1070,7 @@ export default function App() {
   const [needRefresh, setNeedRefresh] = useState(false);
   const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
-  const [expandedMonth, setExpandedMonth] = useState(monthKey(todayISO()));
+  const [expandedMonth, setExpandedMonth] = useState(periodKey(todayISO()));
   const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
 
   // Formulário (apontamento do dia)
@@ -1256,12 +1367,12 @@ export default function App() {
 
   // ── Derivados ──
   const openDays = records.filter(isOpen).sort((a, b) => b.data.localeCompare(a.data));
-  const curKey = monthKey(todayISO());
+  const curKey = periodKey(todayISO());
   const cur = monthSummary(records, curKey, config.taxas, despesas);
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
-  const monthKeys = [...new Set(records.map(r => monthKey(r.data)))].sort().reverse().slice(0, 3);
+  const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 3);
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
 
   const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
@@ -1624,6 +1735,8 @@ export default function App() {
           <DespesaManual
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
+            limites={config.limites || DEFAULT_CONFIG.limites}
+            faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, SOLICITANTE)}
             onSaved={() => { setScreen("despMenu"); refreshDespesas(); }}
             onCancel={() => setScreen("despMenu")}
           />
