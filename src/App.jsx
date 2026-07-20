@@ -1152,6 +1152,150 @@ function GestaoDespesas({ titulo, icone, despesas, carros, onChange, onAdd, addL
   );
 }
 
+// ─── Tela: Gestão de Pedágios (agrupado por dia, com a rota do km daquele dia) ─
+function GestaoPedagios({ despesas, records, onChange, onAdd }) {
+  const byPeriod = {};
+  despesas.forEach(d => {
+    const k = periodKey(d.data);
+    (byPeriod[k] = byPeriod[k] || []).push(d);
+  });
+  const periodos = Object.keys(byPeriod).sort().reverse().slice(0, 3);
+
+  const [expandedPeriod, setExpandedPeriod] = useState(periodos[0] || null);
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function salvarEdicao() {
+    setBusy(true);
+    try {
+      await apiUpdateDespesa({ id: edit.id, valor: Number(edit.valor) || 0, descricao: edit.descricao, data: edit.data });
+      setEdit(null);
+      await onChange();
+    } catch (e) { alert("Erro ao salvar: " + (e.message || "")); }
+    finally { setBusy(false); }
+  }
+  async function excluir(id) {
+    if (!confirm("Excluir este pedágio? Não dá pra desfazer.")) return;
+    setBusy(true);
+    try { await apiDeleteDespesa(id); await onChange(); }
+    catch (e) { alert("Erro ao excluir: " + (e.message || "")); }
+    finally { setBusy(false); }
+  }
+
+  // Rotas de km lançadas num dia (pode ter mais de um carro/viagem no mesmo dia).
+  function rotasDoDia(data) {
+    return (records || []).filter(r => r.data === data && !isOpen(r));
+  }
+
+  return (
+    <Card className="mt-2.5 p-3.5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-gray-800">🛣️ Pedágios</h2>
+        <button onClick={onAdd} className="text-xs font-medium px-2.5 py-1.5 rounded-lg" style={{ background: BTJ_BLUE, color: "#fff" }}>
+          📄 Importar extrato do tag
+        </button>
+      </div>
+
+      {periodos.length === 0 && <p className="text-sm text-gray-400 text-center py-6">Nenhum pedágio lançado ainda.</p>}
+
+      <div className="space-y-2">
+        {periodos.map(pk => {
+          const itensPeriodo = byPeriod[pk];
+          const totalPeriodo = itensPeriodo.reduce((s, d) => s + (Number(d.valor) || 0), 0);
+          const abertoPeriodo = expandedPeriod === pk;
+
+          // Agrupa os itens do período por dia
+          const byDia = {};
+          itensPeriodo.forEach(d => (byDia[d.data] = byDia[d.data] || []).push(d));
+          const dias = Object.keys(byDia).sort().reverse();
+
+          return (
+            <div key={pk} className="border border-gray-100 rounded-xl overflow-hidden">
+              <button onClick={() => setExpandedPeriod(abertoPeriodo ? null : pk)} className="w-full flex items-center justify-between px-3.5 py-3 text-left">
+                <div>
+                  <p className="text-sm font-semibold" style={{ color: BTJ_NAVY }}>{periodLabel(pk)}</p>
+                  <p className="text-[11px] text-gray-400">{itensPeriodo.length} passagem(ns) · {dias.length} dia(s)</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold" style={{ color: BTJ_BLUE }}>R$ {totalPeriodo.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                  <span className="text-gray-400 text-xs">{abertoPeriodo ? "▲" : "▼"}</span>
+                </div>
+              </button>
+
+              {abertoPeriodo && (
+                <div className="border-t border-gray-100">
+                  {dias.map(dia => {
+                    const itensDia = byDia[dia].sort((a, b) => (a.descricao || "").localeCompare(b.descricao || ""));
+                    const totalDia = itensDia.reduce((s, d) => s + (Number(d.valor) || 0), 0);
+                    const rotas = rotasDoDia(dia);
+                    return (
+                      <div key={dia} className="border-b border-gray-100 last:border-b-0 px-3.5 py-2.5">
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-xs font-semibold text-gray-700">{formatDateShort(dia)} · {weekdayPT(dia)}</p>
+                          <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>R$ {totalDia.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
+                        </div>
+
+                        {rotas.length > 0 ? (
+                          rotas.map(r => (
+                            <p key={r.id} className="text-[10px] text-gray-400 mb-1">
+                              🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""} · {kmOf(r).toLocaleString("pt-BR")} km
+                            </p>
+                          ))
+                        ) : (
+                          <p className="text-[10px] text-gray-400 mb-1">sem viagem de km lançada nesse dia</p>
+                        )}
+
+                        <div className="space-y-1 mt-1.5">
+                          {itensDia.map(d => (
+                            edit?.id === d.id ? (
+                              <div key={d.id} className="rounded-lg p-2.5" style={{ background: "#F8FAFC" }}>
+                                <div className="flex gap-1.5 mb-2">
+                                  <div className="flex-1">
+                                    <p className="text-[9px] text-gray-500 mb-0.5">Data</p>
+                                    <input type="date" value={edit.data} onChange={e => setEdit({ ...edit, data: e.target.value })}
+                                      className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <p className="text-[9px] text-gray-500 mb-0.5">Valor</p>
+                                    <input type="number" inputMode="decimal" value={edit.valor} onChange={e => setEdit({ ...edit, valor: e.target.value })}
+                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                      className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs" />
+                                  </div>
+                                </div>
+                                <input type="text" value={edit.descricao} placeholder="praça/local" onChange={e => setEdit({ ...edit, descricao: e.target.value })}
+                                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
+                                <div className="flex gap-1.5">
+                                  <button onClick={salvarEdicao} disabled={busy} className="flex-[2] rounded-lg py-2 text-xs font-medium text-white" style={{ background: BTJ_BLUE }}>Salvar</button>
+                                  <button onClick={() => setEdit(null)} className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">Cancelar</button>
+                                  <button onClick={() => excluir(d.id)} disabled={busy} className="flex-1 rounded-lg py-2 text-xs" style={{ background: "#FDECEC", color: "#C62A2F" }}>🗑</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button key={d.id} onClick={() => setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data })}
+                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left" style={{ background: "#FAFAF8" }}>
+                                <div className="min-w-0">
+                                  <span className="text-xs text-gray-700">{d.descricao || "Pedágio"}</span>
+                                  <span className="text-[10px] text-gray-400 ml-1.5">{d.origem === "extrato" ? "· importado" : "· manual"}</span>
+                                </div>
+                                <span className="text-xs font-semibold shrink-0" style={{ color: "#04342C" }}>R$ {(Number(d.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎</span>
+                              </button>
+                            )
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [records, setRecords] = useState([]);
@@ -1823,13 +1967,11 @@ export default function App() {
 
         {/* ═══ LISTA: PEDÁGIOS ═══ */}
         {screen === "despPedagio" && (
-          <GestaoDespesas
-            titulo="Pedágios" icone="🛣️"
+          <GestaoPedagios
             despesas={despesas.filter(d => (d.tipo || "").toLowerCase().indexOf("ped") === 0)}
-            carros={config.carros || DEFAULT_CONFIG.carros}
+            records={records}
             onChange={refreshDespesas}
             onAdd={() => setScreen("extrato")}
-            addLabel="📄 Importar extrato do tag"
           />
         )}
 
@@ -2023,15 +2165,6 @@ export default function App() {
                             )}
                           </div>
                         ))}
-                        <div className="px-3.5 py-2">
-                          <button
-                            onClick={() => exportToExcel(s.recs.filter(r => !isOpen(r)), monthLabelFromKey(key), config.taxas, config.colaboradores)}
-                            className="w-full rounded-lg py-2 text-xs font-medium text-white"
-                            style={{ background: "#16a34a" }}
-                          >
-                            ⬇ Baixar Excel de {monthLabelFromKey(key)}
-                          </button>
-                        </div>
                       </div>
                     )}
                   </div>
