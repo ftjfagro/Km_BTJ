@@ -924,6 +924,11 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
   }
 
   async function salvar() {
+    if (!carros.length || carros.indexOf(carro) === -1) {
+      avisar("Antes de lançar despesas, cadastre o seu veículo.");
+      setMostrarCadastroCarro(true);
+      return;
+    }
     if (!valor || Number(valor) <= 0) { avisar("Informe o valor da despesa."); return; }
     if (travado && travado(data)) { avisar("Este período já foi fechado e enviado — não dá mais pra lançar despesas nele."); return; }
     if (excede && !escolhaExcedente) {
@@ -1127,7 +1132,11 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
   async function lerExtrato(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    if (carro === NOVO_CARRO_VALUE) { avisar("Escolha ou cadastre um carro antes de importar."); return; }
+    if (carro === NOVO_CARRO_VALUE || !carros.length || carros.indexOf(carro) === -1) {
+      avisar("Antes de importar, cadastre o seu veículo na lista de carros.");
+      setMostrarCadastroCarro(true);
+      return;
+    }
     setLoading(true);
     try {
       let todas = [];
@@ -1659,7 +1668,7 @@ function Aprovacoes({ usuario, onVoltar }) {
   async function carregar() {
     setErro("");
     try {
-      setLista(await apiListarReaberturas(usuario.nome));
+      setLista(await apiListarReaberturas(usuario.email));
     } catch (e) {
       setErro(e.message || "Erro ao carregar.");
       setLista([]);
@@ -1672,7 +1681,7 @@ function Aprovacoes({ usuario, onVoltar }) {
     if (!(await confirmar(`${verbo} esta reabertura?`))) return;
     setDecidindo(id);
     try {
-      await apiDecidirReabertura(id, decisao, usuario.nome);
+      await apiDecidirReabertura(id, decisao, usuario.email);
       await carregar();
     } catch (e) {
       avisar(e.message || "Erro ao registrar a decisão.");
@@ -1771,7 +1780,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
     const motivo = motivoReab.trim();
     if (!motivo) { avisar("Explique o motivo da reabertura."); return; }
     try {
-      await apiSolicitarReabertura(usuario.nome, periodo, motivo);
+      await apiSolicitarReabertura(usuario.email, periodo, motivo);
       setPedindoReab(false);
       setReabEnviada(true);
     } catch (e) {
@@ -1831,7 +1840,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
     }
     setEnviando(true);
     try {
-      const ret = await apiAprovarEEmitir(periodo, assinatura, usuario.nome);
+      const ret = await apiAprovarEEmitir(periodo, assinatura, usuario.email);
       onEmitido(ret, assinatura);
     } catch (e) {
       setErro(e.message || "Erro ao emitir. Tente de novo.");
@@ -2141,11 +2150,23 @@ export default function App() {
     Object.entries(envios).forEach(async ([periodo, e]) => {
       if (e.status !== "pendente") return;
       try {
-        const ret = await apiAprovarEEmitir(periodo, e.assinaturaBase64, usuario.nome);
+        const ret = await apiAprovarEEmitir(periodo, e.assinaturaBase64, usuario.email);
         setEnvioPeriodo(periodo, { status: "enviado", retorno: ret, assinaturaBase64: e.assinaturaBase64 });
       } catch { /* tenta de novo na próxima vez que ficar online */ }
     });
   }, [online]);
+
+  // Quando o config chega, garante que o carro selecionado é do próprio usuário.
+  // Usuário novo (sem carros) fica com o campo vazio até cadastrar o dele.
+  useEffect(() => {
+    const lista = config.carros || [];
+    if (lista.length) {
+      if (lista.indexOf(fCarro) === -1) { setFCarro(lista[0]); saveLastCar(lista[0]); }
+    } else if (fCarro) {
+      setFCarro("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.carros]);
 
   // Atualiza o "App sincronizado há X min" a cada 30s (só quando está nesse estado)
   useEffect(() => {
@@ -2158,7 +2179,7 @@ export default function App() {
   const [minhasReab, setMinhasReab] = useState([]);
   useEffect(() => {
     if (!usuario || !online) return;
-    apiStatusReaberturas(usuario.nome).then(reab => {
+    apiStatusReaberturas(usuario.email).then(reab => {
       setMinhasReab(reab);
       setEnvios(prev => {
         const nxt = { ...prev };
@@ -2221,7 +2242,7 @@ export default function App() {
   useEffect(() => {
     if (!usuario) return;
     setRecords(loadRecords());
-    apiFetchConfig(usuario.nome)
+    apiFetchConfig(usuario.email)
       .then(c => { setConfig(c); localStorage.setItem(KEY_CONFIG, JSON.stringify(c)); })
       .catch(() => {});
     pullAndReconcile(); // baixa da planilha (fonte mestra) e alinha o local
@@ -2233,14 +2254,14 @@ export default function App() {
   // para todo o resto, a planilha é a fonte da verdade.
   async function refreshDespesas() {
     if (!navigator.onLine || !usuario) return;
-    try { setDespesas(await apiListDespesas(usuario.nome)); } catch {}
+    try { setDespesas(await apiListDespesas(usuario.email)); } catch {}
   }
 
   async function pullAndReconcile() {
     if (!navigator.onLine || !usuario) return;
     try {
       setSyncStatus("syncing");
-      const remote = (await apiList(usuario.nome)).filter(registroValido_);
+      const remote = (await apiList(usuario.email)).filter(registroValido_);
       const local = loadRecords();
       // Rede de segurança: guarda uma cópia do estado local ANTES de qualquer
       // reconciliação. Se algo der errado, nada se perde de verdade.
@@ -2357,7 +2378,7 @@ export default function App() {
     const pending = loadRecords().filter(r => r.synced === false);
     for (const r of pending) {
       try {
-        await apiSave(r, usuario.nome);
+        await apiSave(r, usuario.email);
         mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
       } catch { /* fica pra próxima */ }
     }
@@ -2393,7 +2414,7 @@ export default function App() {
     if (!rec) return;
     try {
       setSyncStatus("saving");
-      await apiSave(rec, usuario.nome);
+      await apiSave(rec, usuario.email);
       mutateRecords(recs => recs.map(x => x.id === rec.id ? { ...x, synced: true } : x));
       setUltimaSync(new Date());
       setSyncStatus("ok");
@@ -2404,6 +2425,12 @@ export default function App() {
 
   // ── Foto (inicial/final) ──
   async function handlePhoto(phase, file) {
+    const meusCarrosF = config.carros || [];
+    if (!meusCarrosF.length || meusCarrosF.indexOf(fCarro) === -1) {
+      avisar("Antes de lançar km, cadastre o seu veículo (toque em '+ Outro (cadastrar novo)' na lista de carros).");
+      setMostrarCadastroCarroPrincipal(true);
+      return;
+    }
     if (!file) return;
     const setLoading = phase === "inicial" ? setLoadingIni : setLoadingFin;
     setLoading(true);
@@ -2458,6 +2485,12 @@ export default function App() {
 
   // ── Salvar apontamento (parcial permitido, mas coerente) ──
   function save() {
+    const meusCarros = config.carros || [];
+    if (!meusCarros.length || meusCarros.indexOf(fCarro) === -1) {
+      avisar("Antes de lançar km, cadastre o seu veículo (toque em '+ Outro (cadastrar novo)' na lista de carros).");
+      setMostrarCadastroCarroPrincipal(true);
+      return;
+    }
     if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
       avisar("Preencha ao menos um KM, destino ou observação.");
       return;
@@ -2544,7 +2577,7 @@ export default function App() {
     if (!(await confirmar(`Excluir a viagem de ${rotulo}?\nApaga do aparelho e da planilha. Não dá pra desfazer.`))) return;
     if (!navigator.onLine) { avisar("Sem internet agora — conecte pra excluir (senão o lançamento voltaria na próxima sincronização)."); return; }
     try {
-      await apiDeleteLancamento(rec.data, rec.carro || CARRO_PADRAO, usuario.nome);
+      await apiDeleteLancamento(rec.data, rec.carro || CARRO_PADRAO, usuario.email);
       mutateRecords(recs => recs.filter(x => x.id !== rec.id));
       setInlineEdit(null);
       setUltimaSync(new Date());
@@ -2720,12 +2753,13 @@ export default function App() {
                   className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white font-medium"
                   style={{ color: BTJ_NAVY }}
                 >
-                  {(config.carros || DEFAULT_CONFIG.carros).map(c => <option key={c} value={c}>{c}</option>)}
+                  {!(config.carros || []).length && <option value="">— cadastre seu veículo —</option>}
+                  {(config.carros || []).map(c => <option key={c} value={c}>{c}</option>)}
                   <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
                 </select>
                 {mostrarCadastroCarroPrincipal && (
                   <CadastrarCarroModal
-                    colaborador={usuario.nome}
+                    colaborador={usuario.email}
                     onCancel={() => setMostrarCadastroCarroPrincipal(false)}
                     onSaved={(novoCarro) => {
                       handleNovoCarro(novoCarro);
@@ -2972,7 +3006,7 @@ export default function App() {
             carroInicial={fCarro}
             limites={config.limites || DEFAULT_CONFIG.limites}
             faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, usuario.nome)}
-            colaborador={usuario.nome}
+            colaborador={usuario.email}
             travado={periodoTravado}
             onNovoCarro={handleNovoCarro}
             onSaved={() => { setScreen("despMenu"); refreshDespesas(); }}
@@ -2986,7 +3020,7 @@ export default function App() {
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
             records={records}
-            colaborador={usuario.nome}
+            colaborador={usuario.email}
             travado={periodoTravado}
             onNovoCarro={handleNovoCarro}
             onDone={() => { setScreen("despMenu"); refreshDespesas(); }}
