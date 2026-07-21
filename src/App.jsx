@@ -2537,18 +2537,30 @@ export default function App() {
       {/* Cabeçalho fixo */}
       <div style={{ background: BTJ_NAVY }} className="text-white pt-6 pb-2.5 px-4 sticky top-0 z-20">
         <div className="max-w-lg mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-white px-1.5 py-0.5 rounded-sm">
-              <img src={logoUrl} alt="BTJ" className="h-5" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>'; }} />
+          {screen === "home" ? (
+            <div className="flex items-center gap-2">
+              <div className="bg-white px-1.5 py-0.5 rounded-sm">
+                <img src={logoUrl} alt="BTJ" className="h-5" onError={e => { e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>'; }} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold leading-tight">{usuario.nome.split(" ").slice(0, 2).join(" ")}</p>
+                <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
+                  {usuario.setor || SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, usuario.nome, todayISO()).toFixed(2).replace(".", ",")}/km
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-semibold leading-tight">{usuario.nome.split(" ").slice(0, 2).join(" ")}</p>
-              <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
-                {usuario.setor || SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, usuario.nome, todayISO()).toFixed(2).replace(".", ",")}/km
-              </p>
-            </div>
-          </div>
-          {/* Menu de conta (⋯) na linha do nome */}
+          ) : (
+            <button
+              onClick={() => {
+                setInlineEdit(null);
+                const voltarPraMenu = ["despPedagio", "despOutras", "despesa", "extrato"];
+                setScreen(voltarPraMenu.indexOf(screen) !== -1 ? "despMenu" : "home");
+              }}
+              className="text-sm font-medium" style={{ color: BTJ_BLUE }}>
+              ‹ Voltar
+            </button>
+          )}
+          {/* Menu de conta (⋯), sempre à direita */}
           <div className="relative">
             <button onClick={() => setMenuAberto(v => !v)} aria-label="Menu"
               className="w-9 h-9 flex items-center justify-center rounded-full text-xl leading-none"
@@ -2574,9 +2586,9 @@ export default function App() {
             )}
           </div>
         </div>
-        {/* Linha 2: ações (home) ou Voltar (telas internas) */}
-        <div className="max-w-lg mx-auto flex items-center justify-end mt-1.5">
-          {screen === "home" ? (
+        {/* Linha 2: ações, só na home */}
+        {screen === "home" && (
+          <div className="max-w-lg mx-auto flex items-center justify-end mt-1.5">
             <div className="flex gap-1.5">
               <button onClick={() => setScreen("resumos")}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
@@ -2589,18 +2601,8 @@ export default function App() {
                 <span className="text-sm">💳</span> Despesas
               </button>
             </div>
-          ) : (
-            <button
-              onClick={() => {
-                setInlineEdit(null);
-                const voltarPraMenu = ["despPedagio", "despOutras", "despesa", "extrato"];
-                setScreen(voltarPraMenu.indexOf(screen) !== -1 ? "despMenu" : "home");
-              }}
-              className="mr-auto text-sm font-medium" style={{ color: BTJ_BLUE }}>
-              ‹ Voltar
-            </button>
-          )}
-        </div>
+          </div>
+        )}
         {syncStatus && (
           <p className="max-w-lg mx-auto text-[11px] mt-0.5" style={{ color: syncStatus === "error" ? "#FFD9A0" : BTJ_LIGHT }}>
             {syncStatus === "syncing" && "☁ gravando na base de dados..."}
