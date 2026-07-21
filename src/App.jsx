@@ -209,13 +209,26 @@ function statusPeriodo(periodo, envios, hojeKey) {
 
 const KEY_PHOTO_QUEUE = "km_fotos_pendentes";
 
+// Registro válido = data ISO plausível. Lançamentos com data quebrada (ex: o
+// famoso 31/12/1969, a "data zero" do computador, criado por um bug antigo)
+// são descartados na carga — sem isso eles ficam ressuscitando: moram no
+// localStorage e o app os re-sincroniza pra planilha mesmo depois de apagados lá.
+function registroValido_(r) {
+  return r && typeof r.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.data) && r.data >= "2020-01-01";
+}
+
 function loadRecords() {
   try {
     const raw = localStorage.getItem(KEY_RECORDS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const recs = JSON.parse(raw);
+      const limpos = recs.filter(registroValido_);
+      if (limpos.length !== recs.length) localStorage.setItem(KEY_RECORDS, JSON.stringify(limpos));
+      return limpos;
+    }
     const old = localStorage.getItem(KEY_RECORDS_OLD);
     if (old) {
-      const migrated = JSON.parse(old).map(r => ({ ...r, observacao: "", synced: true }));
+      const migrated = JSON.parse(old).map(r => ({ ...r, observacao: "", synced: true })).filter(registroValido_);
       localStorage.setItem(KEY_RECORDS, JSON.stringify(migrated));
       return migrated;
     }
@@ -310,6 +323,18 @@ async function apiAprovarEEmitir(periodo, assinaturaBase64) {
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao emitir o relatório");
   return data;
+}
+
+// Exclui um lançamento de km na planilha (por data+carro+colaborador).
+async function apiDeleteLancamento(data, carro, colaborador) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "deleteLancamento", data, carro, colaborador }),
+  });
+  const out = await res.json();
+  if (!out.ok) throw new Error(out.error || "Erro ao excluir o lançamento");
+  return out;
 }
 
 // ─── Reabertura de relatório já enviado ──────────────────────────────────────
@@ -2073,6 +2098,10 @@ export default function App() {
   const [mostrarCadastroCarroPrincipal, setMostrarCadastroCarroPrincipal] = useState(false);
   const [envios, setEnvios] = useState(loadEnvios());
   const [revisaoPeriodo, setRevisaoPeriodo] = useState(null);
+  // Agrupamento do relatório de km: mês (ciclo 26→25, padrão) ou semana (dom–sáb).
+  // PRECISA ficar aqui em cima, antes do gate de login — hook depois de um
+  // return antecipado quebra o React (tela branca ao logar; erro #310).
+  const [agrupamento, setAgrupamento] = useState("mes");
 
   const hojeKey = periodKey(todayISO());
   const perAnterior = periodoAnterior(hojeKey);
@@ -2189,7 +2218,7 @@ export default function App() {
     if (!navigator.onLine || !usuario) return;
     try {
       setSyncStatus("syncing");
-      const remote = await apiList(usuario.nome);
+      const remote = (await apiList(usuario.nome)).filter(registroValido_);
       const local = loadRecords();
       // Rede de segurança: guarda uma cópia do estado local ANTES de qualquer
       // reconciliação. Se algo der errado, nada se perde de verdade.
@@ -2447,8 +2476,6 @@ export default function App() {
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
   const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 3);
-  // Agrupamento do relatório: por mês (ciclo 26→25, padrão) ou por semana (seg–dom)
-  const [agrupamento, setAgrupamento] = useState("mes");
   const weekKeys = [...new Set(records.map(r => weekKey(r.data)))].sort().reverse();
   const groupKeys = agrupamento === "mes" ? monthKeys : weekKeys;
   const curGroupKey = agrupamento === "mes" ? periodKey(todayISO()) : weekKey(todayISO());
@@ -2481,6 +2508,24 @@ export default function App() {
     mutateRecords(recs => recs.map(x => x.id === rec.id ? updated : x));
     setInlineEdit(null);
     syncRecord(updated);
+  }
+
+  // Exclui o lançamento de km do dia: apaga do aparelho E da planilha (a linha
+  // do Log é limpa, não deletada). Exige internet — sem fila de exclusão, pra
+  // evitar o zumbi que volta na sincronização.
+  async function excluirDia(rec) {
+    if (periodoTravado(rec.data)) { avisar("Este período já foi fechado e enviado — não dá pra excluir lançamentos dele."); return; }
+    const rotulo = `${formatDateBR(rec.data)} · ${(rec.carro || CARRO_PADRAO).split(" ")[0]}${rec.destino ? ` · ${rec.origem || "?"} → ${rec.destino}` : ""}`;
+    if (!(await confirmar(`Excluir a viagem de ${rotulo}?\nApaga do aparelho e da planilha. Não dá pra desfazer.`))) return;
+    if (!navigator.onLine) { avisar("Sem internet agora — conecte pra excluir (senão o lançamento voltaria na próxima sincronização)."); return; }
+    try {
+      await apiDeleteLancamento(rec.data, rec.carro || CARRO_PADRAO, usuario.nome);
+      mutateRecords(recs => recs.filter(x => x.id !== rec.id));
+      setInlineEdit(null);
+      setSyncStatus("ok");
+    } catch (e) {
+      avisar("Erro ao excluir: " + (e.message || "tente novamente."));
+    }
   }
 
   // ═══ RENDER ═══
@@ -3027,6 +3072,10 @@ export default function App() {
                                     Cancelar
                                   </button>
                                 </div>
+                                <button onClick={() => excluirDia(r)}
+                                  className="w-full rounded-lg py-1.5 text-[11px] mt-1.5 border" style={{ borderColor: "#F4C7C3", color: "#B3261E" }}>
+                                  🗑 Excluir este dia (apaga a viagem do {formatDateShort(r.data)})
+                                </button>
                               </div>
                             ) : r.soPedagio ? (
                               <div className="w-full flex items-center justify-between px-3.5 py-2">
