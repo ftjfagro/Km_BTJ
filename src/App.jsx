@@ -578,6 +578,25 @@ function monthSummary(records, key, taxas, colaboradores, solicitante, despesas,
       if (r.kmFinal != null) odos.push({ d: r.data + "B", v: r.kmFinal });
     });
     odos.sort((a, b) => a.d.localeCompare(b.d));
+
+    // O km rodado ENTRE grupos (ex: da última viagem da semana passada até a
+    // primeira desta) é uso pessoal e aparece no grupo em que ele termina:
+    // o odômetro da última viagem anterior ao grupo entra como ponto de partida.
+    if (odos.length >= 1) {
+      const primeiraData = recsC.reduce((m, r) => (m === null || r.data < m ? r.data : m), null);
+      let odoAnterior = null;
+      records.forEach(r => {
+        if ((r.carro || CARRO_PADRAO) !== c) return;
+        if (r.data >= primeiraData) return; // só viagens anteriores ao grupo
+        const v = r.kmFinal != null ? r.kmFinal : r.kmInicial;
+        if (v == null) return;
+        if (odoAnterior === null || r.data > odoAnterior.d || (r.data === odoAnterior.d && v > odoAnterior.v)) {
+          odoAnterior = { d: r.data, v };
+        }
+      });
+      if (odoAnterior) odos.unshift({ d: odoAnterior.d + "B", v: odoAnterior.v });
+    }
+
     if (odos.length >= 2) {
       const span = odos[odos.length - 1].v - odos[0].v;
       const trabC = recsC.reduce((s, r) => s + kmOf(r), 0);
@@ -1395,6 +1414,9 @@ function GestaoPedagios({ despesas, records, travado, onChange, onAdd }) {
 }
 
 // ─── Assinatura: desenhar na tela ou normalizar arquivo pra PNG 600×180 ─────
+// A foto/scan vira só o TRAÇO (fundo do papel removido via transparência,
+// como o Adobe faz) — no PDF a assinatura senta em cima da linha, sem o
+// retângulo branco da foto por cima.
 function arquivoParaAssinatura(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -1403,10 +1425,19 @@ function arquivoParaAssinatura(file) {
       const cv = document.createElement("canvas");
       cv.width = 600; cv.height = 180;
       const ctx = cv.getContext("2d");
-      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 600, 180);
       const esc = Math.min(600 / img.width, 180 / img.height);
       const w = img.width * esc, h = img.height * esc;
       ctx.drawImage(img, (600 - w) / 2, (180 - h) / 2, w, h);
+      // Papel some, traço fica: pixel claro -> transparente, meio-tom -> suave
+      const id = ctx.getImageData(0, 0, 600, 180);
+      const px = id.data;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] === 0) continue; // já transparente (borda do enquadramento)
+        const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        if (lum > 200) px[i + 3] = 0;
+        else if (lum > 140) px[i + 3] = Math.round(255 * (200 - lum) / 60);
+      }
+      ctx.putImageData(id, 0, 0);
       URL.revokeObjectURL(url);
       resolve(cv.toDataURL("image/png"));
     };
@@ -1422,7 +1453,9 @@ function AssinaturaModal({ onConfirm, onCancel }) {
   useEffect(() => {
     const cv = canvasRef.current;
     const ctx = cv.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    // Pixels ficam TRANSPARENTES (o PNG exportado é só o traço); o fundo
+    // branco que se vê é CSS do elemento, não faz parte da imagem.
+    ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.strokeStyle = "#0A2540"; ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
     let drawing = false, last = null;
     const pos = (e) => {
@@ -1457,8 +1490,7 @@ function AssinaturaModal({ onConfirm, onCancel }) {
 
   function limpar() {
     const cv = canvasRef.current;
-    const ctx = cv.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
     desenhouRef.current = false;
   }
   function confirmar() {
@@ -1471,7 +1503,7 @@ function AssinaturaModal({ onConfirm, onCancel }) {
       <div className="bg-white rounded-xl p-4 w-full max-w-sm">
         <p className="font-semibold text-sm mb-2" style={{ color: BTJ_NAVY }}>✍️ Assine no quadro abaixo</p>
         <canvas ref={canvasRef} width={600} height={180}
-          className="w-full rounded-lg mb-3" style={{ border: "1.5px dashed #C5C3BB", touchAction: "none" }} />
+          className="w-full rounded-lg mb-3" style={{ border: "1.5px dashed #C5C3BB", touchAction: "none", background: "#fff" }} />
         <div className="flex gap-2">
           <button onClick={confirmar} className="flex-[2] rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BTJ_BLUE }}>Usar assinatura</button>
           <button onClick={limpar} className="flex-1 rounded-lg py-2 text-sm text-gray-600 border border-gray-200">Limpar</button>
