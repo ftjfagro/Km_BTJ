@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  base: './',
+  base: '/Km_BTJ/', // GitHub Pages de projeto — sem isso os caminhos quebram
   build: {
     outDir: 'dist',
   },
@@ -11,26 +11,22 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'prompt', // avisa quando há versão nova (não atualiza sozinho no meio do uso)
-      includeAssets: ['favicon.ico', 'icon-16.png', 'icon-32.png', 'icon-180.png', 'logo.png'],
-      manifest: {
-        name: 'Km BTJ',
-        short_name: 'Km BTJ',
-        description: 'Registro de quilometragem e reembolso — BTJ',
-        start_url: './',
-        scope: './',
-        display: 'standalone',
-        orientation: 'portrait',
-        background_color: '#001F3E',
-        theme_color: '#001F3E',
-        icons: [
-          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ],
-      },
+      // O manifest agora é o arquivo estático public/manifest.webmanifest
+      // (novo ícone velocímetro navy BTJ) — o plugin não gera mais o dele.
+      manifest: false,
+      includeAssets: [
+        'favicon.ico',
+        'icons/favicon-32.png',
+        'icons/apple-touch-icon.png',
+        'icons/icon-192.png',
+        'icons/icon-512.png',
+        'icons/icon-maskable-192.png',
+        'icons/icon-maskable-512.png',
+        'icons/icon.svg',
+      ],
       workbox: {
         // Guarda o app inteiro (JS, CSS, HTML, ícones) para abrir 100% offline.
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest,woff,woff2}'],
         // Nunca cacheia as chamadas ao Apps Script (dados sempre frescos quando online).
         navigateFallbackDenylist: [/^\/macros/],
         runtimeCaching: [
