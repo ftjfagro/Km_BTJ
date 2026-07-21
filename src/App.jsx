@@ -325,11 +325,11 @@ async function apiAddCarro(carro, colaborador) {
 // Emite o relatório do período: o backend gera PDF+Excel, arquiva no Drive e
 // envia o e-mail. Demora ~15-20s. Retorna { ok, periodo, reemissao,
 // enviadoPara, comAssinatura, pdfUrl, excelUrl, enviadoEm }.
-async function apiAprovarEEmitir(periodo, assinaturaBase64) {
+async function apiAprovarEEmitir(periodo, assinaturaBase64, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "aprovarEEmitir", periodo, assinaturaBase64: assinaturaBase64 || undefined }),
+    body: JSON.stringify({ action: "aprovarEEmitir", periodo, assinaturaBase64: assinaturaBase64 || undefined, colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao emitir o relatório");
@@ -437,11 +437,11 @@ async function apiOcrCupom(base64) {
   return data.cupom || null;
 }
 
-async function apiCheckDuplicatas(passagens) {
+async function apiCheckDuplicatas(passagens, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action: "checarDuplicatas", passagens }),
+    body: JSON.stringify({ action: "checarDuplicatas", passagens, colaborador }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao checar duplicatas");
@@ -1142,7 +1142,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
       if (!todas.length) { avisar("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
       // Checa contra o que já está na planilha (essa sim é uma duplicata real).
       let comCheck = todas;
-      try { comCheck = await apiCheckDuplicatas(todas); } catch { /* segue sem o check se falhar */ }
+      try { comCheck = await apiCheckDuplicatas(todas, colaborador); } catch { /* segue sem o check se falhar */ }
       setPassagens(comCheck);
       const inicial = {};
       comCheck.forEach((p, i) => {
@@ -1831,7 +1831,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
     }
     setEnviando(true);
     try {
-      const ret = await apiAprovarEEmitir(periodo, assinatura);
+      const ret = await apiAprovarEEmitir(periodo, assinatura, usuario.nome);
       onEmitido(ret, assinatura);
     } catch (e) {
       setErro(e.message || "Erro ao emitir. Tente de novo.");
@@ -2141,7 +2141,7 @@ export default function App() {
     Object.entries(envios).forEach(async ([periodo, e]) => {
       if (e.status !== "pendente") return;
       try {
-        const ret = await apiAprovarEEmitir(periodo, e.assinaturaBase64);
+        const ret = await apiAprovarEEmitir(periodo, e.assinaturaBase64, usuario.nome);
         setEnvioPeriodo(periodo, { status: "enviado", retorno: ret, assinaturaBase64: e.assinaturaBase64 });
       } catch { /* tenta de novo na próxima vez que ficar online */ }
     });
