@@ -203,6 +203,7 @@ function statusPeriodo(periodo, envios, hojeKey) {
   const e = envios[periodo];
   if (e && e.status === "enviado") return "enviado";
   if (e && e.status === "pendente") return "pendente";
+  if (e && e.status === "reaberto") return "reaberto"; // reabertura aprovada: editável até reenviar
   return periodo === hojeKey ? "aberto" : "fechado";
 }
 
@@ -238,7 +239,7 @@ function loadPhotoQueue() {
 }
 function persistPhotoQueue(q) {
   try { localStorage.setItem(KEY_PHOTO_QUEUE, JSON.stringify(q)); }
-  catch { alert("Memória do navegador cheia — a foto não pôde ser guardada offline. Digite o KM manualmente."); }
+  catch { avisar("Memória do navegador cheia — a foto não pôde ser guardada offline. Digite o KM manualmente."); }
 }
 
 // ─── API (Apps Script) ────────────────────────────────────────────────────────
@@ -308,6 +309,51 @@ async function apiAprovarEEmitir(periodo, assinaturaBase64) {
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao emitir o relatório");
+  return data;
+}
+
+// ─── Reabertura de relatório já enviado ──────────────────────────────────────
+async function apiSolicitarReabertura(colaborador, periodo, motivo) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "solicitarReabertura", colaborador, periodo, motivo }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao solicitar a reabertura");
+  return data;
+}
+
+async function apiStatusReaberturas(colaborador) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "statusReaberturas", colaborador }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao consultar reaberturas");
+  return data.reaberturas || [];
+}
+
+async function apiListarReaberturas(aprovador) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "listarReaberturas", aprovador }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao listar solicitações");
+  return data.reaberturas || [];
+}
+
+async function apiDecidirReabertura(id, decisao, aprovador) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "decidirReabertura", id, decisao, aprovador }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao registrar a decisão");
   return data;
 }
 
@@ -609,6 +655,46 @@ function monthSummary(records, key, taxas, colaboradores, solicitante, despesas,
   };
 }
 
+// ─── Diálogos do app (substituem os alert/confirm nativos do navegador, que
+// mostram "ftjfagro.github.io diz" no título — aqui é "Aviso · Km BTJ") ──────
+let _dialogPush = null;
+function _abrirDialogo(d) {
+  return new Promise(res => {
+    if (_dialogPush) _dialogPush({ ...d, res });
+    // Fallback improvável (host ainda não montado): usa o nativo pra não engolir o aviso
+    else res(d.tipo === "confirmar" ? window.confirm(d.msg) : (window.alert(d.msg), true));
+  });
+}
+function avisar(msg) { return _abrirDialogo({ tipo: "aviso", msg }); }
+function confirmar(msg) { return _abrirDialogo({ tipo: "confirmar", msg }); }
+
+function DialogHost() {
+  const [fila, setFila] = useState([]);
+  useEffect(() => {
+    _dialogPush = d => setFila(f => [...f, d]);
+    return () => { _dialogPush = null; };
+  }, []);
+  const atual = fila[0];
+  if (!atual) return null;
+  const fechar = v => { atual.res(v); setFila(f => f.slice(1)); };
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-5" style={{ background: "rgba(0,0,0,0.45)", zIndex: 60 }}>
+      <div className="bg-white rounded-xl p-4 w-full max-w-xs shadow-lg">
+        <p className="text-[11px] font-bold uppercase tracking-wide mb-1" style={{ color: BTJ_BLUE }}>
+          {atual.tipo === "confirmar" ? "Confirmação · Km BTJ" : "Aviso · Km BTJ"}
+        </p>
+        <p className="text-sm text-gray-700 whitespace-pre-wrap mb-3">{atual.msg}</p>
+        <div className="flex gap-1.5 justify-end">
+          {atual.tipo === "confirmar" && (
+            <button onClick={() => fechar(false)} className="rounded-lg px-4 py-2 text-xs text-gray-600 border border-gray-200">Cancelar</button>
+          )}
+          <button onClick={() => fechar(true)} className="rounded-lg px-5 py-2 text-xs font-semibold text-white" style={{ background: BTJ_BLUE }}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── UI base ──────────────────────────────────────────────────────────────────
 function Card({ children, className = "" }) {
   return <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>;
@@ -700,15 +786,15 @@ function CadastrarCarroModal({ colaborador, onSaved, onCancel }) {
   const [saving, setSaving] = useState(false);
 
   async function salvar() {
-    if (!modelo.trim()) { alert("Digite o modelo/apelido do carro."); return; }
-    if (!placa.trim()) { alert("Digite a placa."); return; }
+    if (!modelo.trim()) { avisar("Digite o modelo/apelido do carro."); return; }
+    if (!placa.trim()) { avisar("Digite a placa."); return; }
     const carroCompleto = `${modelo.trim()} ${placa.trim().toUpperCase()}`;
     setSaving(true);
     try {
       await apiAddCarro(carroCompleto, colaborador);
       onSaved(carroCompleto);
     } catch (e) {
-      alert("Erro ao cadastrar carro: " + (e.message || ""));
+      avisar("Erro ao cadastrar carro: " + (e.message || ""));
     } finally {
       setSaving(false);
     }
@@ -789,26 +875,26 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
             if (c.data) setData(String(c.data).slice(0, 10));
             if (c.descricao) setDescricao(c.descricao);
           } else {
-            alert("Não consegui ler o cupom automaticamente. Preencha os campos na mão (a foto foi guardada como comprovante).");
+            avisar("Não consegui ler o cupom automaticamente. Preencha os campos na mão (a foto foi guardada como comprovante).");
           }
         } catch (e) {
-          alert("Falha ao ler o cupom: " + (e.message || "") + ". A foto foi guardada; preencha na mão.");
+          avisar("Falha ao ler o cupom: " + (e.message || "") + ". A foto foi guardada; preencha na mão.");
         } finally {
           setLendoCupom(false);
         }
       }
-    } catch { alert("Não consegui processar a imagem do comprovante."); }
+    } catch { avisar("Não consegui processar a imagem do comprovante."); }
   }
 
   async function salvar() {
-    if (!valor || Number(valor) <= 0) { alert("Informe o valor da despesa."); return; }
-    if (travado && travado(data)) { alert("Este período já foi fechado e enviado — não dá mais pra lançar despesas nele."); return; }
+    if (!valor || Number(valor) <= 0) { avisar("Informe o valor da despesa."); return; }
+    if (travado && travado(data)) { avisar("Este período já foi fechado e enviado — não dá mais pra lançar despesas nele."); return; }
     if (excede && !escolhaExcedente) {
-      alert(`O valor por pessoa (R$ ${valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}) passa do limite de R$ ${limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Escolha uma das opções abaixo antes de salvar.`);
+      avisar(`O valor por pessoa (R$ ${valorPorPessoa.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}) passa do limite de R$ ${limiteAplicavel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Escolha uma das opções abaixo antes de salvar.`);
       return;
     }
     if (excede && escolhaExcedente === "total" && !justificativa.trim()) {
-      alert("Para registrar o valor total acima do limite, escreva uma justificativa.");
+      avisar("Para registrar o valor total acima do limite, escreva uma justificativa.");
       return;
     }
     const valorTotalPago = Number(valor);
@@ -828,7 +914,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
       });
       onSaved();
     } catch (e) {
-      alert("Erro ao salvar: " + (e.message || "tente novamente."));
+      avisar("Erro ao salvar: " + (e.message || "tente novamente."));
     } finally {
       setSaving(false);
     }
@@ -1004,7 +1090,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
   async function lerExtrato(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    if (carro === NOVO_CARRO_VALUE) { alert("Escolha ou cadastre um carro antes de importar."); return; }
+    if (carro === NOVO_CARRO_VALUE) { avisar("Escolha ou cadastre um carro antes de importar."); return; }
     setLoading(true);
     try {
       let todas = [];
@@ -1016,7 +1102,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
       // Sem dedupe entre passagens do mesmo print: passagens iguais (mesma data/local/valor)
       // podem ser genuinamente diferentes (duas passadas pela mesma praça no mesmo dia).
       todas.sort((a, b) => String(a.data).localeCompare(String(b.data)));
-      if (!todas.length) { alert("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
+      if (!todas.length) { avisar("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
       // Checa contra o que já está na planilha (essa sim é uma duplicata real).
       let comCheck = todas;
       try { comCheck = await apiCheckDuplicatas(todas); } catch { /* segue sem o check se falhar */ }
@@ -1030,7 +1116,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
       });
       setSel(inicial);
     } catch (e) {
-      alert("Erro ao ler o extrato: " + (e.message || "tente novamente."));
+      avisar("Erro ao ler o extrato: " + (e.message || "tente novamente."));
     } finally {
       setLoading(false);
     }
@@ -1045,7 +1131,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
       const marcadas = passagens.filter((_, i) => sel[i]);
       const bloqueadas = travado ? marcadas.filter(p => travado(p.data)) : [];
       if (bloqueadas.length > 0) {
-        alert("Algumas passagens são de período já fechado e enviado — desmarque-as antes de lançar: " + bloqueadas.map(p => p.data).join(", "));
+        avisar("Algumas passagens são de período já fechado e enviado — desmarque-as antes de lançar: " + bloqueadas.map(p => p.data).join(", "));
         setSaving(false);
         return;
       }
@@ -1056,10 +1142,10 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
           colaborador,
         });
       }
-      alert(`${marcadas.length} lançamento(s) do tag lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
+      avisar(`${marcadas.length} lançamento(s) do tag lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
       onDone();
     } catch (e) {
-      alert("Erro ao lançar: " + (e.message || "tente novamente."));
+      avisar("Erro ao lançar: " + (e.message || "tente novamente."));
     } finally {
       setSaving(false);
     }
@@ -1173,14 +1259,14 @@ function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, on
       await apiUpdateDespesa({ id: edit.id, valor: Number(edit.valor) || 0, descricao: edit.descricao, data: edit.data });
       setEdit(null);
       await onChange();
-    } catch (e) { alert("Erro ao salvar: " + (e.message || "")); }
+    } catch (e) { avisar("Erro ao salvar: " + (e.message || "")); }
     finally { setBusy(false); }
   }
   async function excluir(id) {
-    if (!confirm("Excluir esta despesa? Não dá pra desfazer.")) return;
+    if (!(await confirmar("Excluir esta despesa? Não dá pra desfazer."))) return;
     setBusy(true);
     try { await apiDeleteDespesa(id); await onChange(); }
-    catch (e) { alert("Erro ao excluir: " + (e.message || "")); }
+    catch (e) { avisar("Erro ao excluir: " + (e.message || "")); }
     finally { setBusy(false); }
   }
 
@@ -1242,7 +1328,7 @@ function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, on
                           </div>
                         </div>
                       ) : (
-                        <button onClick={() => { if (travado && travado(d.data)) { alert("Período já enviado — edição travada."); return; } setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data }); }}
+                        <button onClick={() => { if (travado && travado(d.data)) { avisar("Período já enviado — edição travada."); return; } setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data }); }}
                           className="w-full flex items-center justify-between px-3.5 py-2 text-left">
                           <div className="min-w-0">
                             <p className="text-xs text-gray-800">{formatDateShort(d.data)} · {weekdayAbrev(d.data)}{d.tipo === "Pedágio" && d.carro ? ` · ${d.carro.split(" ")[0]}` : ""}{d.descricao ? ` · ${d.descricao}` : ""}</p>
@@ -1288,14 +1374,14 @@ function GestaoPedagios({ despesas, records, travado, onChange, onAdd }) {
       await apiUpdateDespesa({ id: edit.id, valor: Number(edit.valor) || 0, descricao: edit.descricao, data: edit.data });
       setEdit(null);
       await onChange();
-    } catch (e) { alert("Erro ao salvar: " + (e.message || "")); }
+    } catch (e) { avisar("Erro ao salvar: " + (e.message || "")); }
     finally { setBusy(false); }
   }
   async function excluir(id) {
-    if (!confirm("Excluir este pedágio? Não dá pra desfazer.")) return;
+    if (!(await confirmar("Excluir este pedágio? Não dá pra desfazer."))) return;
     setBusy(true);
     try { await apiDeleteDespesa(id); await onChange(); }
-    catch (e) { alert("Erro ao excluir: " + (e.message || "")); }
+    catch (e) { avisar("Erro ao excluir: " + (e.message || "")); }
     finally { setBusy(false); }
   }
 
@@ -1389,7 +1475,7 @@ function GestaoPedagios({ despesas, records, travado, onChange, onAdd }) {
                                 </div>
                               </div>
                             ) : (
-                              <button key={d.id} onClick={() => { if (travado && travado(d.data)) { alert("Período já enviado — edição travada."); return; } setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data }); }}
+                              <button key={d.id} onClick={() => { if (travado && travado(d.data)) { avisar("Período já enviado — edição travada."); return; } setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data }); }}
                                 className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left" style={{ background: "#FAFAF8" }}>
                                 <div className="min-w-0">
                                   <span className="text-xs text-gray-700">{d.descricao || "Pedágio"}</span>
@@ -1446,6 +1532,19 @@ function arquivoParaAssinatura(file) {
   });
 }
 
+// Assinatura do solicitante fica salva no aparelho: envia uma vez, e nos
+// próximos relatórios ela já vem carregada (dá pra trocar/remover na hora).
+const KEY_ASSINATURA = "km_assinatura_v1";
+function loadAssinatura() {
+  try { return localStorage.getItem(KEY_ASSINATURA) || null; } catch { return null; }
+}
+function saveAssinatura(png) {
+  try {
+    if (png) localStorage.setItem(KEY_ASSINATURA, png);
+    else localStorage.removeItem(KEY_ASSINATURA);
+  } catch {}
+}
+
 function AssinaturaModal({ onConfirm, onCancel }) {
   const canvasRef = useRef(null);
   const desenhouRef = useRef(false);
@@ -1494,7 +1593,7 @@ function AssinaturaModal({ onConfirm, onCancel }) {
     desenhouRef.current = false;
   }
   function confirmar() {
-    if (!desenhouRef.current) { alert("Assine no quadro antes de confirmar."); return; }
+    if (!desenhouRef.current) { avisar("Assine no quadro antes de confirmar."); return; }
     onConfirm(canvasRef.current.toDataURL("image/png"));
   }
 
@@ -1514,9 +1613,110 @@ function AssinaturaModal({ onConfirm, onCancel }) {
   );
 }
 
+// ─── Tela: Aprovações (só pra quem é Aprovador no Cadastros, coluna I) ───────
+function Aprovacoes({ usuario, onVoltar }) {
+  const [lista, setLista] = useState(null); // null = carregando
+  const [erro, setErro] = useState("");
+  const [decidindo, setDecidindo] = useState(null); // id em decisão
+
+  async function carregar() {
+    setErro("");
+    try {
+      setLista(await apiListarReaberturas(usuario.nome));
+    } catch (e) {
+      setErro(e.message || "Erro ao carregar.");
+      setLista([]);
+    }
+  }
+  useEffect(() => { carregar(); }, []);
+
+  async function decidir(id, decisao) {
+    const verbo = decisao === "aprovar" ? "APROVAR" : "NEGAR";
+    if (!(await confirmar(`${verbo} esta reabertura?`))) return;
+    setDecidindo(id);
+    try {
+      await apiDecidirReabertura(id, decisao, usuario.nome);
+      await carregar();
+    } catch (e) {
+      avisar(e.message || "Erro ao registrar a decisão.");
+    } finally {
+      setDecidindo(null);
+    }
+  }
+
+  const pendentes = (lista || []).filter(r => r.status === "pendente");
+  const decididas = (lista || []).filter(r => r.status !== "pendente");
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-bold text-base" style={{ color: BTJ_NAVY }}>✓ Aprovações</h2>
+        <button onClick={onVoltar} className="text-xs text-gray-400">‹ Voltar</button>
+      </div>
+
+      {lista === null && <p className="text-center text-sm text-gray-400 py-6">Carregando…</p>}
+      {erro && <p className="text-xs text-red-600 mb-2">{erro}</p>}
+
+      {lista !== null && (
+        <>
+          <p className="text-[11px] font-semibold text-gray-500 mb-1.5">Reaberturas pendentes ({pendentes.length})</p>
+          {pendentes.length === 0 && <p className="text-xs text-gray-400 mb-3">Nenhuma solicitação aguardando decisão.</p>}
+          <div className="space-y-2 mb-4">
+            {pendentes.map(r => (
+              <div key={r.id} className="rounded-xl border p-3" style={{ borderColor: "#F2D9A0", background: "#FFFBEF" }}>
+                <p className="text-sm font-semibold" style={{ color: BTJ_NAVY }}>
+                  {monthLabelFromKey(r.periodo)} · {r.colaborador.split(" ").slice(0, 2).join(" ")}
+                </p>
+                <p className="text-xs text-gray-600 mt-0.5">“{r.motivo}”</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">solicitado em {r.solicitadoEm}</p>
+                <div className="flex gap-1.5 mt-2">
+                  <button onClick={() => decidir(r.id, "aprovar")} disabled={decidindo === r.id}
+                    className="flex-1 rounded-lg py-1.5 text-xs font-semibold text-white"
+                    style={{ background: decidindo === r.id ? "#9CA3AF" : "#0F766E" }}>
+                    ✓ Aprovar
+                  </button>
+                  <button onClick={() => decidir(r.id, "negar")} disabled={decidindo === r.id}
+                    className="flex-1 rounded-lg py-1.5 text-xs font-semibold text-white"
+                    style={{ background: decidindo === r.id ? "#9CA3AF" : "#B3261E" }}>
+                    ✗ Negar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {decididas.length > 0 && (
+            <>
+              <p className="text-[11px] font-semibold text-gray-500 mb-1.5">Histórico</p>
+              <div className="space-y-1.5">
+                {decididas.map(r => (
+                  <div key={r.id} className="rounded-lg border border-gray-100 px-3 py-2 bg-white">
+                    <p className="text-xs text-gray-700">
+                      {monthLabelFromKey(r.periodo)} · {r.colaborador.split(" ").slice(0, 2).join(" ")}{" "}
+                      {r.status === "aprovado"
+                        ? <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>aprovado</span>
+                        : <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "#FDE8E8", color: "#9B1C1C" }}>negado</span>}
+                    </p>
+                    <p className="text-[10px] text-gray-400">“{r.motivo}” · decidido {r.decididoEm}{r.decididoPor ? ` · ${r.decididoPor}` : ""}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 // ─── Tela: Revisão do Relatório do Mês (conferência antes de fechar/enviar) ──
-function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, usuario, envio, onVoltar, onEmitido, onPendente }) {
-  const [assinatura, setAssinatura] = useState(envio?.assinaturaBase64 || null);
+function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, usuario, envio, reabertura, onVoltar, onEmitido, onPendente }) {
+  const [assinatura, setAssinaturaState] = useState(envio?.assinaturaBase64 || loadAssinatura());
+  // Toda mudança de assinatura também persiste no aparelho (null = esquecer)
+  function setAssinatura(png) {
+    setAssinaturaState(png);
+    saveAssinatura(png);
+  }
   const [mostrarAssinatura, setMostrarAssinatura] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
@@ -1524,6 +1724,23 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
 
   const jaEnviado = envio?.status === "enviado";
   const pendente = envio?.status === "pendente";
+  const reaberto = envio?.status === "reaberto";
+  const reabPendente = reabertura?.status === "pendente";
+  const [pedindoReab, setPedindoReab] = useState(false);
+  const [motivoReab, setMotivoReab] = useState("");
+  const [reabEnviada, setReabEnviada] = useState(false);
+
+  async function solicitarReabertura() {
+    const motivo = motivoReab.trim();
+    if (!motivo) { avisar("Explique o motivo da reabertura."); return; }
+    try {
+      await apiSolicitarReabertura(usuario.nome, periodo, motivo);
+      setPedindoReab(false);
+      setReabEnviada(true);
+    } catch (e) {
+      avisar(e.message || "Erro ao solicitar a reabertura.");
+    }
+  }
   const retorno = envio?.retorno || null;
 
   const recs = records.filter(r => periodKey(r.data) === periodo).sort((a, b) => a.data.localeCompare(b.data));
@@ -1564,8 +1781,12 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
 
   async function enviar() {
     setErro("");
+    if (!assinatura) {
+      setErro("A assinatura do solicitante é obrigatória — assine na tela ou envie o arquivo antes de fechar.");
+      return;
+    }
     const acao = jaEnviado ? "reenviar" : "fechar e enviar";
-    if (!confirm(`Depois de ${acao}, os lançamentos deste período ficam travados pra edição. Continuar?`)) return;
+    if (!(await confirmar(`Depois de ${acao}, os lançamentos deste período ficam travados pra edição. Continuar?`))) return;
 
     if (!navigator.onLine) {
       onPendente(assinatura);
@@ -1588,7 +1809,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       const png = await arquivoParaAssinatura(file);
       setAssinatura(png);
     } catch (e) {
-      alert(e.message || "Não consegui ler o arquivo.");
+      avisar(e.message || "Não consegui ler o arquivo.");
     }
   }
 
@@ -1597,8 +1818,8 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       <div className="flex items-center justify-between mb-1">
         <h2 className="font-semibold text-gray-800">📋 Revisão · {periodLabel(periodo)}</h2>
         <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-          style={jaEnviado ? { background: "#E1F5EE", color: "#085041" } : pendente ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#FEF3E2", color: "#854F0B" }}>
-          {jaEnviado ? "✓ Enviado" : pendente ? "⟳ Envio pendente" : "Fechado · aguardando envio"}
+          style={jaEnviado ? { background: "#E1F5EE", color: "#085041" } : reaberto ? { background: "#FEF3E2", color: "#854F0B" } : pendente ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#FEF3E2", color: "#854F0B" }}>
+          {jaEnviado ? "✓ Enviado" : reaberto ? "🔓 Reaberto pra correção" : pendente ? "⟳ Envio pendente" : "Fechado · aguardando envio"}
         </span>
       </div>
       <p className="text-[11px] text-gray-400 mb-3">Confira tudo antes de fechar e enviar.</p>
@@ -1671,7 +1892,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       </div>
 
       {/* ── Assinatura ── */}
-      <p className="text-[11px] text-gray-500 mb-1">Assinatura do solicitante (opcional — sem ela, o espaço fica em branco pra assinar depois)</p>
+      <p className="text-[11px] text-gray-500 mb-1">Assinatura do solicitante <span className="font-semibold" style={{ color: "#B3261E" }}>(obrigatória)</span></p>
       <div className="flex gap-1.5 mb-2">
         <button onClick={() => setMostrarAssinatura(true)} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>✍️ Assinar na tela</button>
         <button onClick={() => arquivoRef.current?.click()} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>🖼️ Enviar arquivo</button>
@@ -1680,7 +1901,10 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       {assinatura && (
         <div className="flex items-center gap-2 mb-2">
           <img src={assinatura} alt="assinatura" className="h-10 rounded border border-gray-200 bg-white" />
-          <button onClick={() => setAssinatura(null)} className="text-[10px] text-gray-400 underline">remover</button>
+          <div>
+            <p className="text-[10px] text-gray-400">✓ salva neste aparelho — vale pros próximos relatórios</p>
+            <button onClick={() => setAssinatura(null)} className="text-[10px] text-gray-400 underline">remover</button>
+          </div>
         </div>
       )}
       {mostrarAssinatura && (
@@ -1709,11 +1933,25 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
         </div>
       )}
 
+      {/* ── Reabertura ── */}
+      {reaberto && (
+        <div className="rounded-xl px-3 py-2.5 mb-2" style={{ background: "#FFF7E6", border: "1px solid #F2D9A0" }}>
+          <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>🔓 Reabertura aprovada — período liberado pra correção</p>
+          <p className="text-[11px] mt-0.5" style={{ color: "#854F0B" }}>Edite os lançamentos de km e despesas e depois feche e reenvie. Os arquivos anteriores serão substituídos.</p>
+        </div>
+      )}
+      {jaEnviado && (reabPendente || reabEnviada) && (
+        <div className="rounded-xl px-3 py-2.5 mb-2" style={{ background: "#FFF7E6", border: "1px solid #F2D9A0" }}>
+          <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>⏳ Reabertura solicitada — aguardando aprovação</p>
+          <p className="text-[11px] mt-0.5" style={{ color: "#854F0B" }}>O aprovador foi avisado por e-mail. Quando aprovar, o período destrava aqui no app pra você corrigir e reenviar.</p>
+        </div>
+      )}
+
       {/* ── Fechar e enviar / Reenviar ── */}
       <button onClick={enviar} disabled={enviando || (problemas.length > 0 && !jaEnviado)}
         className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
         style={{ background: jaEnviado ? "#0F6E56" : BTJ_BLUE }}>
-        {enviando ? "⟳ Gerando e enviando (15-20s)..." : jaEnviado ? "↻ Reenviar relatório" : pendente ? "⟳ Tentar enviar agora" : "🔒 Fechar e enviar relatório"}
+        {enviando ? "⟳ Gerando e enviando (15-20s)..." : jaEnviado ? "↻ Reenviar relatório" : pendente ? "⟳ Tentar enviar agora" : reaberto ? "🔒 Fechar e reenviar relatório" : "🔒 Fechar e enviar relatório"}
       </button>
       {problemas.length > 0 && !jaEnviado && <p className="text-[10px] text-center" style={{ color: "#C62A2F" }}>Resolva as pendências acima pra liberar o envio</p>}
       {jaEnviado && retorno && (
@@ -1722,7 +1960,30 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
           <button onClick={() => window.open(retorno.excelUrl, "_blank")} className="flex-1 rounded-lg py-2 text-xs font-medium border border-gray-200 text-gray-600">📊 Ver Excel</button>
         </div>
       )}
+      {jaEnviado && !reabPendente && !reabEnviada && (
+        <button onClick={() => setPedindoReab(true)}
+          className="w-full rounded-lg py-2 text-xs font-medium mt-1.5 border" style={{ borderColor: "#F2D9A0", color: "#854F0B", background: "#FFFBEF" }}>
+          🔓 Solicitar reabertura pra corrigir
+        </button>
+      )}
       <button onClick={onVoltar} className="w-full rounded-lg py-2 text-xs text-gray-500 mt-1">‹ Voltar</button>
+
+      {/* Modal do motivo da reabertura */}
+      {pedindoReab && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
+          <div className="bg-white rounded-xl p-4 w-full max-w-sm">
+            <p className="font-semibold text-sm mb-1" style={{ color: BTJ_NAVY }}>🔓 Solicitar reabertura</p>
+            <p className="text-[11px] text-gray-500 mb-2">O período continua travado até o aprovador autorizar. Explique o que precisa ser corrigido:</p>
+            <textarea value={motivoReab} onChange={e => setMotivoReab(e.target.value)} rows={3}
+              placeholder="Ex: faltou lançar a viagem do dia 14 e o pedágio saiu duplicado"
+              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm mb-2" />
+            <div className="flex gap-1.5">
+              <button onClick={solicitarReabertura} className="flex-[2] rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BTJ_BLUE }}>Enviar solicitação</button>
+              <button onClick={() => setPedindoReab(false)} className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -1841,6 +2102,36 @@ export default function App() {
       } catch { /* tenta de novo na próxima vez que ficar online */ }
     });
   }, [online]);
+
+  // ── Reaberturas: sincroniza minhas solicitações e destrava períodos aprovados ──
+  const [minhasReab, setMinhasReab] = useState([]);
+  useEffect(() => {
+    if (!usuario || !online) return;
+    apiStatusReaberturas(usuario.nome).then(reab => {
+      setMinhasReab(reab);
+      setEnvios(prev => {
+        const nxt = { ...prev };
+        let mudou = false;
+        reab.forEach(r => {
+          if (r.status !== "aprovado") return;
+          const e = nxt[r.periodo];
+          // Destrava só uma vez por solicitação: depois do reenvio, a mesma
+          // aprovação antiga não reabre de novo (reaberturaId marca isso).
+          if (e && e.status === "enviado" && e.reaberturaId !== r.id) {
+            nxt[r.periodo] = { ...e, status: "reaberto", reaberturaId: r.id };
+            mudou = true;
+          }
+        });
+        if (mudou) saveEnvios(nxt);
+        return mudou ? nxt : prev;
+      });
+    }).catch(() => {});
+  }, [usuario, online, screen]);
+
+  // Sou aprovador? (vem do Cadastros, coluna I — sempre fresco via config)
+  const ehAprovador = !!(config.colaboradores || []).find(
+    c => c.nome?.toLowerCase() === usuario?.nome?.toLowerCase() && c.aprovador
+  );
 
   // Compartilhado por todas as telas com seletor de carro: adiciona o carro
   // recém-cadastrado na config local, sem precisar recarregar tudo.
@@ -1989,7 +2280,7 @@ export default function App() {
 
   // Depois daqui não tem mais nenhum hook — pode sair sem violar a regra dos hooks.
   if (!usuario) {
-    return <LoginScreen onLogin={setUsuario} />;
+    return <><DialogHost /><LoginScreen onLogin={setUsuario} /></>;
   }
 
   async function processPhotoQueue() {
@@ -2069,12 +2360,12 @@ export default function App() {
         q.push({ date: fData, carro: fCarro, phase, b64, ts: Date.now() });
         persistPhotoQueue(q);
         if (phase === "inicial") setQueuedIni(true); else setQueuedFin(true);
-        alert("Sem internet agora. A foto ficou guardada e será lida automaticamente quando a conexão voltar.");
+        avisar("Sem internet agora. A foto ficou guardada e será lida automaticamente quando a conexão voltar.");
         return;
       }
       const km = await apiOcr(b64);
       if (km == null) {
-        alert("Não consegui ler o odômetro. Digite o KM manualmente.");
+        avisar("Não consegui ler o odômetro. Digite o KM manualmente.");
         return;
       }
       if (phase === "inicial") {
@@ -2084,21 +2375,21 @@ export default function App() {
         setFKmFin(km);
       }
     } catch (e) {
-      alert("Erro ao processar a imagem: " + (e.message || "tente novamente."));
+      avisar("Erro ao processar a imagem: " + (e.message || "tente novamente."));
     } finally {
       setLoading(false);
     }
   }
 
   // ── KM emendado: foto inicial de hoje pode fechar o dia aberto anterior (MESMO carro) ──
-  function offerBridge(km) {
+  async function offerBridge(km) {
     const open = records
       .filter(r => r.data < fData && (r.carro || CARRO_PADRAO) === fCarro && r.kmInicial != null && r.kmFinal == null)
       .sort((a, b) => b.data.localeCompare(a.data))[0];
     if (!open) return;
     const err = checkCoherence(records, open.data, open.kmInicial, km, open.id, fCarro);
     if (err) return;
-    const ok = confirm(
+    const ok = await confirmar(
       `O dia ${formatDateBR(open.data)} está sem KM final (${fCarro}).\n` +
       `Como o carro ficou parado, usar esta leitura (${km.toLocaleString("pt-BR")}) como o KM final daquele dia?`
     );
@@ -2114,17 +2405,17 @@ export default function App() {
   // ── Salvar apontamento (parcial permitido, mas coerente) ──
   function save() {
     if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
-      alert("Preencha ao menos um KM, destino ou observação.");
+      avisar("Preencha ao menos um KM, destino ou observação.");
       return;
     }
     const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro);
     if (err) {
       setCoherErr(err);
-      alert("⛔ " + err.msg);
+      avisar("⛔ " + err.msg);
       return;
     }
     if (periodoTravado(fData)) {
-      alert("Este período já foi fechado e enviado — não dá mais pra lançar ou editar km nele.");
+      avisar("Este período já foi fechado e enviado — não dá mais pra lançar ou editar km nele.");
       return;
     }
     saveLastCar(fCarro);
@@ -2168,7 +2459,7 @@ export default function App() {
   // ── Edição inline na tela de resumos ──
   function openInline(r) {
     if (periodoTravado(r.data)) {
-      alert("Este período já foi fechado e enviado — os lançamentos estão travados. Use 'Reenviar' na revisão se precisar corrigir algo com o financeiro.");
+      avisar("Este período já foi fechado e enviado — os lançamentos estão travados. Use 'Reenviar' na revisão se precisar corrigir algo com o financeiro.");
       return;
     }
     setInlineEdit({ id: r.id, kmIni: r.kmInicial, kmFin: r.kmFinal, obs: r.observacao || "", err: null });
@@ -2185,7 +2476,7 @@ export default function App() {
     const rec = records.find(r => r.id === inlineEdit.id);
     if (!rec) return;
     const err = checkCoherence(records, rec.data, inlineEdit.kmIni, inlineEdit.kmFin, inlineEdit.id, rec.carro || CARRO_PADRAO);
-    if (err) { setInlineEdit(prev => ({ ...prev, err })); alert("⛔ " + err.msg); return; }
+    if (err) { setInlineEdit(prev => ({ ...prev, err })); avisar("⛔ " + err.msg); return; }
     const updated = { ...rec, kmInicial: inlineEdit.kmIni, kmFinal: inlineEdit.kmFin, observacao: inlineEdit.obs, synced: false };
     mutateRecords(recs => recs.map(x => x.id === rec.id ? updated : x));
     setInlineEdit(null);
@@ -2195,6 +2486,7 @@ export default function App() {
   // ═══ RENDER ═══
   return (
     <div className="min-h-screen font-sans" style={{ background: "#F4F6FA" }}>
+      <DialogHost />
 
       {/* Cabeçalho fixo */}
       <div style={{ background: BTJ_NAVY }} className="text-white pt-6 pb-2.5 px-4 sticky top-0 z-20">
@@ -2208,10 +2500,16 @@ export default function App() {
               <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
                 {usuario.setor || SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, usuario.nome, todayISO()).toFixed(2).replace(".", ",")}/km
               </p>
-              <button onClick={() => { if (confirm("Sair da conta?")) { limparSessao(); setUsuario(null); } }}
+              <button onClick={async () => { if (await confirmar("Sair da conta?")) { limparSessao(); setUsuario(null); } }}
                 className="text-[10px] underline" style={{ color: BTJ_LIGHT }}>
                 Sair
               </button>
+              {ehAprovador && (
+                <button onClick={() => setScreen("aprovacoes")}
+                  className="text-[10px] underline ml-2" style={{ color: BTJ_LIGHT }}>
+                  ✓ Aprovações
+                </button>
+              )}
             </div>
           </div>
           {screen === "home" ? (
@@ -2517,10 +2815,15 @@ export default function App() {
             colaboradores={config.colaboradores}
             usuario={usuario}
             envio={envios[revisaoPeriodo] || null}
+            reabertura={minhasReab.filter(r => r.periodo === revisaoPeriodo).slice(-1)[0] || null}
             onVoltar={() => { setScreen("resumos"); setRevisaoPeriodo(null); }}
-            onEmitido={(ret, assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "enviado", retorno: ret, assinaturaBase64: assinatura })}
-            onPendente={(assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "pendente", assinaturaBase64: assinatura })}
+            onEmitido={(ret, assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "enviado", retorno: ret, assinaturaBase64: assinatura, reaberturaId: envios[revisaoPeriodo]?.reaberturaId })}
+            onPendente={(assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "pendente", assinaturaBase64: assinatura, reaberturaId: envios[revisaoPeriodo]?.reaberturaId })}
           />
+        )}
+
+        {screen === "aprovacoes" && (
+          <Aprovacoes usuario={usuario} onVoltar={() => setScreen("home")} />
         )}
 
         {screen === "despMenu" && (
@@ -2664,6 +2967,7 @@ export default function App() {
                             if (st === "aberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>⏳ aberto</span>;
                             if (st === "enviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ enviado</span>;
                             if (st === "pendente") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⟳ envio pendente</span>;
+                            if (st === "reaberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FFF7E6", color: "#854F0B" }}>🔓 reaberto pra correção</span>;
                             return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>🔓 fechado · não enviado</span>;
                           })()}
                           {agrupamento === "semana" && isCur && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>atual</span>}
@@ -2676,7 +2980,7 @@ export default function App() {
                         {agrupamento === "mes" && !isCur && (
                           <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
                             className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
-                            📋 {statusPeriodo(key, envios, hojeKey) === "enviado" ? "Ver envio / reenviar" : "Revisar e enviar"} ›
+                            📋 {(() => { const st = statusPeriodo(key, envios, hojeKey); return st === "enviado" ? "Ver envio / reenviar" : st === "reaberto" ? "Corrigir e reenviar" : "Revisar e enviar"; })()} ›
                           </button>
                         )}
                       </div>
