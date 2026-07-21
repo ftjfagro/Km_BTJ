@@ -64,11 +64,10 @@ function weekdayPT(iso) {
 function weekdayAbrev(iso) {
   return WEEKDAYS_ABREV_PT[parseISO(iso).getDay()];
 }
-// Semana de segunda a domingo: a chave é o ISO da segunda-feira daquela semana.
+// Semana de domingo a sábado: a chave é o ISO do domingo daquela semana.
 function weekKey(iso) {
   const d = parseISO(iso);
-  const diff = (d.getDay() + 6) % 7; // seg=0 ... dom=6
-  d.setDate(d.getDate() - diff);
+  d.setDate(d.getDate() - d.getDay()); // dom=0 ... sáb=6
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function weekLabel(key) {
@@ -2598,7 +2597,7 @@ export default function App() {
             </div>
 
             <div className="mt-2.5 space-y-2">
-              {/* Seletor de agrupamento: Mês (ciclo 26→25) ou Semana (seg–dom) */}
+              {/* Seletor de agrupamento: Mês (ciclo 26→25) ou Semana (dom–sáb) */}
               <div className="flex justify-end">
                 <div className="inline-flex rounded-lg overflow-hidden border" style={{ borderColor: BTJ_BLUE }}>
                   {[["mes", "Mês"], ["semana", "Semana"]].map(([v, rotulo]) => (
