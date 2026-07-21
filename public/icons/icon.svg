@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#213a6b"/><stop offset="1" stop-color="#14213f"/></linearGradient>
+<linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5fd0ff"/><stop offset="1" stop-color="#2f8fe0"/></linearGradient>
+</defs><rect width="512" height="512" rx="112" ry="112" fill="url(#bg)"/><path d="M 149.9 368.1 A 150 150 0 1 1 362.1 368.1" fill="none" stroke="#3a5488" stroke-width="34" stroke-linecap="round"/>
+<path d="M 149.9 368.1 A 150 150 0 1 1 377.4 173.8" fill="none" stroke="url(#pg)" stroke-width="34" stroke-linecap="round"/>
+<line x1="235.0" y1="277.3" x2="366.0" y2="182.1" stroke="#ffffff" stroke-width="20" stroke-linecap="round"/>
+<circle cx="256" cy="262" r="30" fill="#0e1830"/>
+<circle cx="256" cy="262" r="13" fill="#ffffff"/>
+<text x="256" y="452" font-family="Arial,Helvetica,sans-serif" font-size="82" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="2">BTJ</text></svg>

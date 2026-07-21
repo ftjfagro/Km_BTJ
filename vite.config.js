@@ -15,7 +15,6 @@ export default defineConfig({
       // (novo ícone velocímetro navy BTJ) — o plugin não gera mais o dele.
       manifest: false,
       includeAssets: [
-        'favicon.ico',
         'icons/favicon-32.png',
         'icons/apple-touch-icon.png',
         'icons/icon-192.png',
