@@ -50,8 +50,19 @@ function parseISO(s) {
   const [y, m, d] = s.split("-").map(Number);
   return new Date(y, m - 1, d);
 }
-function formatDateBR(s) {
-  const [y, m, d] = s.split("-");
+// "agora mesmo", "há 3 min", "há 2 h", ou a hora cheia se passou muito.
+function tempoRelativo(date) {
+  if (!date) return "";
+  const seg = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seg < 45) return "agora mesmo";
+  if (seg < 90) return "há 1 min";
+  const min = Math.floor(seg / 60);
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 6) return `há ${h} h`;
+  return `às ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+function formatDateBR(s) {  const [y, m, d] = s.split("-");
   return `${d}/${m}/${y}`;
 }
 function formatDateShort(s) {
@@ -2085,6 +2096,8 @@ export default function App() {
   const [despesas, setDespesas] = useState([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [syncStatus, setSyncStatus] = useState(null);
+  const [ultimaSync, setUltimaSync] = useState(null); // Date da última sincronização bem-sucedida
+  const [, forceTick] = useState(0); // re-render periódico pra atualizar o "há X min"
   const [needRefresh, setNeedRefresh] = useState(false);
   const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
@@ -2133,6 +2146,13 @@ export default function App() {
       } catch { /* tenta de novo na próxima vez que ficar online */ }
     });
   }, [online]);
+
+  // Atualiza o "App sincronizado há X min" a cada 30s (só quando está nesse estado)
+  useEffect(() => {
+    if (syncStatus !== "synced") return;
+    const t = setInterval(() => forceTick(n => n + 1), 30000);
+    return () => clearInterval(t);
+  }, [syncStatus]);
 
   // ── Reaberturas: sincroniza minhas solicitações e destrava períodos aprovados ──
   const [minhasReab, setMinhasReab] = useState([]);
@@ -2262,7 +2282,8 @@ export default function App() {
       persistRecords(merged);
       // Sobe as pendências que sobreviveram (elas sobrescrevem a planilha)
       resyncUnsynced();
-      setSyncStatus("ok");
+      setUltimaSync(new Date());
+      setSyncStatus("synced"); // carga/sincronização — NÃO é uma gravação de apontamento
     } catch {
       setSyncStatus(null); // offline ou erro: mantém o local como está
     }
@@ -2317,7 +2338,7 @@ export default function App() {
   async function processPhotoQueue() {
     let q = loadPhotoQueue();
     if (!q.length) return;
-    setSyncStatus("syncing");
+    setSyncStatus("saving");
     for (const item of [...q]) {
       try {
         const km = await apiOcr(item.b64);
@@ -2328,6 +2349,7 @@ export default function App() {
     }
     setQueuedIni(q.some(p => p.date === fData && (p.carro || CARRO_PADRAO) === fCarro && p.phase === "inicial"));
     setQueuedFin(q.some(p => p.date === fData && (p.carro || CARRO_PADRAO) === fCarro && p.phase === "final"));
+    setUltimaSync(new Date());
     setSyncStatus("ok");
   }
 
@@ -2370,9 +2392,10 @@ export default function App() {
   async function syncRecord(rec) {
     if (!rec) return;
     try {
-      setSyncStatus("syncing");
+      setSyncStatus("saving");
       await apiSave(rec, usuario.nome);
       mutateRecords(recs => recs.map(x => x.id === rec.id ? { ...x, synced: true } : x));
+      setUltimaSync(new Date());
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -2524,7 +2547,8 @@ export default function App() {
       await apiDeleteLancamento(rec.data, rec.carro || CARRO_PADRAO, usuario.nome);
       mutateRecords(recs => recs.filter(x => x.id !== rec.id));
       setInlineEdit(null);
-      setSyncStatus("ok");
+      setUltimaSync(new Date());
+      setSyncStatus("deleted");
     } catch (e) {
       avisar("Erro ao excluir: " + (e.message || "tente novamente."));
     }
@@ -2604,8 +2628,11 @@ export default function App() {
         </div>
         {syncStatus && (
           <p className="max-w-lg mx-auto text-[11px] mt-0.5" style={{ color: syncStatus === "error" ? "#FFD9A0" : BTJ_LIGHT }}>
-            {syncStatus === "syncing" && "☁ gravando na base de dados..."}
+            {syncStatus === "syncing" && "☁ sincronizando..."}
+            {syncStatus === "saving" && "☁ gravando apontamento..."}
+            {syncStatus === "synced" && `🔄 App sincronizado ${tempoRelativo(ultimaSync)}`}
             {syncStatus === "ok" && "✅ Apontamento gravado na base de dados"}
+            {syncStatus === "deleted" && "🗑 Lançamento excluído da base de dados"}
             {syncStatus === "error" && "📱 Apontamento gravado LOCAL (sem sinal) — envio automático quando houver conexão"}
           </p>
         )}
