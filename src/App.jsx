@@ -38,6 +38,7 @@ const CITY_GPS_MAP = {
 };
 
 const WEEKDAYS_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+const WEEKDAYS_ABREV_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
 // ─── Helpers de data ──────────────────────────────────────────────────────────
@@ -59,6 +60,23 @@ function formatDateShort(s) {
 }
 function weekdayPT(iso) {
   return WEEKDAYS_PT[parseISO(iso).getDay()];
+}
+function weekdayAbrev(iso) {
+  return WEEKDAYS_ABREV_PT[parseISO(iso).getDay()];
+}
+// Semana de segunda a domingo: a chave é o ISO da segunda-feira daquela semana.
+function weekKey(iso) {
+  const d = parseISO(iso);
+  const diff = (d.getDay() + 6) % 7; // seg=0 ... dom=6
+  d.setDate(d.getDate() - diff);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function weekLabel(key) {
+  const ini = parseISO(key);
+  const fim = new Date(ini);
+  fim.setDate(fim.getDate() + 6);
+  const f = dt => `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`;
+  return `${f(ini)} – ${f(fim)}`;
 }
 function monthKey(iso) {
   return iso.slice(0, 7); // "2026-07"
@@ -525,8 +543,9 @@ function kmOf(r) {
 function isOpen(r) {
   return r.kmInicial == null || r.kmFinal == null;
 }
-function monthSummary(records, key, taxas, colaboradores, solicitante, despesas) {
-  const recs = records.filter(r => periodKey(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
+function monthSummary(records, key, taxas, colaboradores, solicitante, despesas, keyFn) {
+  const agrupa = keyFn || periodKey;
+  const recs = records.filter(r => agrupa(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
   const trabalho = recs.reduce((s, r) => s + kmOf(r), 0);
   const receberKm = recs.reduce((s, r) => s + kmOf(r) * taxaVigente(taxas, colaboradores, solicitante, r.data), 0);
 
@@ -535,7 +554,7 @@ function monthSummary(records, key, taxas, colaboradores, solicitante, despesas)
   const pedagioItensPorDia = {};
   (despesas || []).forEach(d => {
     if ((d.tipo || "").toLowerCase().indexOf("ped") !== 0) return;
-    if (periodKey(d.data) !== key) return;
+    if (agrupa(d.data) !== key) return;
     pedagioPorDia[d.data] = (pedagioPorDia[d.data] || 0) + (Number(d.valor) || 0);
     (pedagioItensPorDia[d.data] = pedagioItensPorDia[d.data] || []).push({ local: d.descricao || "Pedágio", valor: Number(d.valor) || 0 });
   });
@@ -1082,7 +1101,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
                     <p className={`text-xs ${sel[i] ? "text-gray-800" : "text-gray-400 line-through"} ${p.jaLancado ? "!text-red-700" : semViagem ? "!text-amber-700" : ""}`}>
                       {p.local || "Pedágio"}{p.jaLancado ? " · já lançado antes" : semViagem ? " · sem viagem nesse dia" : ""}
                     </p>
-                    <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayPT(p.data)}</p>
+                    <p className={`text-[10px] ${sel[i] ? "text-gray-500" : "text-gray-400"}`}>{formatDateShort(p.data)} · {weekdayAbrev(p.data)}</p>
                   </div>
                   <span className={`text-xs font-semibold ${sel[i] ? "" : "text-gray-400 line-through"}`} style={sel[i] ? { color: "#04342C" } : {}}>
                     R$ {(Number(p.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
@@ -1208,7 +1227,7 @@ function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, on
                         <button onClick={() => { if (travado && travado(d.data)) { alert("Período já enviado — edição travada."); return; } setEdit({ id: d.id, valor: d.valor, descricao: d.descricao, data: d.data }); }}
                           className="w-full flex items-center justify-between px-3.5 py-2 text-left">
                           <div className="min-w-0">
-                            <p className="text-xs text-gray-800">{formatDateShort(d.data)}{d.tipo === "Pedágio" && d.carro ? ` · ${d.carro.split(" ")[0]}` : ""}{d.descricao ? ` · ${d.descricao}` : ""}</p>
+                            <p className="text-xs text-gray-800">{formatDateShort(d.data)} · {weekdayAbrev(d.data)}{d.tipo === "Pedágio" && d.carro ? ` · ${d.carro.split(" ")[0]}` : ""}{d.descricao ? ` · ${d.descricao}` : ""}</p>
                             <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                               <span className="text-[10px] px-1.5 py-0.5 rounded"
                                 style={{ background: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).bg, color: (TIPO_COR[d.tipo] || TIPO_COR["Outros"]).fg }}>
@@ -1311,7 +1330,7 @@ function GestaoPedagios({ despesas, records, travado, onChange, onAdd }) {
                     return (
                       <div key={dia} className="border-b border-gray-100 last:border-b-0 px-3.5 py-2.5">
                         <div className="flex items-center justify-between mb-1">
-                          <p className="text-xs font-semibold text-gray-700">{formatDateShort(dia)} · {weekdayPT(dia)}</p>
+                          <p className="text-xs font-semibold text-gray-700">{formatDateShort(dia)} · {weekdayAbrev(dia)}</p>
                           <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>R$ {totalDia.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
                         </div>
 
@@ -1493,20 +1512,20 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
   const problemas = [];
   recs.filter(isOpen).forEach(r => problemas.push({
     data: r.data,
-    texto: `${formatDateShort(r.data)}: viagem sem km ${r.kmInicial == null ? "inicial" : "final"} (${r.origem || "?"} → ${r.destino || "?"})`,
+    texto: `${formatDateShort(r.data)} (${weekdayAbrev(r.data)}): viagem sem km ${r.kmInicial == null ? "inicial" : "final"} (${r.origem || "?"} → ${r.destino || "?"})`,
   }));
   outras.filter(d => !d.comprovante && d.origem === "manual").forEach(d => problemas.push({
     data: d.data,
-    texto: `${formatDateShort(d.data)}: ${d.tipo} de R$ ${(Number(d.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} sem comprovante`,
+    texto: `${formatDateShort(d.data)} (${weekdayAbrev(d.data)}): ${d.tipo} de R$ ${(Number(d.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} sem comprovante`,
   }));
   const diasPedagioSemViagem = [...new Set(pedagios.filter(p => !diasComViagem.has(p.data)).map(p => p.data))];
   diasPedagioSemViagem.forEach(data => problemas.push({
     data,
-    texto: `${formatDateShort(data)}: pedágio lançado, mas sem viagem de km nesse dia`,
+    texto: `${formatDateShort(data)} (${weekdayAbrev(data)}): pedágio lançado, mas sem viagem de km nesse dia`,
   }));
   const avisos = outras.filter(d => d.justificativa).map(d => ({
     data: d.data,
-    texto: `${formatDateShort(d.data)}: ${d.tipo} acima do limite — justificativa: "${d.justificativa}"`,
+    texto: `${formatDateShort(d.data)} (${weekdayAbrev(d.data)}): ${d.tipo} acima do limite — justificativa: "${d.justificativa}"`,
   }));
 
   const todasDatas = [...new Set([...recs.map(r => r.data), ...desps.map(d => d.data)])].sort();
@@ -1599,7 +1618,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
           const temProblema = problemas.some(p => p.data === data);
           return (
             <div key={data} className="rounded-lg px-3 py-2" style={{ background: temProblema ? "#FFF7F7" : "#FAFAF8", border: temProblema ? "1px solid #F5B8B8" : "1px solid transparent" }}>
-              <p className="text-[11px] font-semibold text-gray-700 mb-0.5">{formatDateShort(data)} · {weekdayPT(data)}{temProblema ? " ⚠" : ""}</p>
+              <p className="text-[11px] font-semibold text-gray-700 mb-0.5">{formatDateShort(data)} · {weekdayAbrev(data)}{temProblema ? " ⚠" : ""}</p>
               {viagens.map(r => (
                 <div key={r.id} className="flex justify-between items-baseline">
                   <span className="text-[11px] text-gray-600">🚗 {(r.carro || "").split(" ")[0]} · {r.origem || "?"} → {r.destino || "?"} · {isOpen(r) ? "— km" : `${kmOf(r).toLocaleString("pt-BR")} km`}</span>
@@ -2106,6 +2125,11 @@ export default function App() {
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
   const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 3);
+  // Agrupamento do relatório: por mês (ciclo 26→25, padrão) ou por semana (seg–dom)
+  const [agrupamento, setAgrupamento] = useState("mes");
+  const weekKeys = [...new Set(records.map(r => weekKey(r.data)))].sort().reverse();
+  const groupKeys = agrupamento === "mes" ? monthKeys : weekKeys;
+  const curGroupKey = agrupamento === "mes" ? periodKey(todayISO()) : weekKey(todayISO());
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
 
 
@@ -2574,12 +2598,26 @@ export default function App() {
             </div>
 
             <div className="mt-2.5 space-y-2">
-              {monthKeys.length === 0 && (
+              {/* Seletor de agrupamento: Mês (ciclo 26→25) ou Semana (seg–dom) */}
+              <div className="flex justify-end">
+                <div className="inline-flex rounded-lg overflow-hidden border" style={{ borderColor: BTJ_BLUE }}>
+                  {[["mes", "Mês"], ["semana", "Semana"]].map(([v, rotulo]) => (
+                    <button key={v}
+                      onClick={() => { setAgrupamento(v); setExpandedMonth(v === "mes" ? periodKey(todayISO()) : weekKey(todayISO())); }}
+                      className="px-3 py-1 text-xs font-medium"
+                      style={agrupamento === v ? { background: BTJ_BLUE, color: "#fff" } : { background: "#fff", color: BTJ_NAVY }}>
+                      {rotulo}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {groupKeys.length === 0 && (
                 <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
               )}
-              {monthKeys.map(key => {
-                const s = monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas);
-                const isCur = key === curKey;
+              {groupKeys.map(key => {
+                const s = monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas, agrupamento === "mes" ? periodKey : weekKey);
+                const isCur = key === curGroupKey;
                 const opened = expandedMonth === key;
                 return (
                   <div key={key} className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -2589,21 +2627,22 @@ export default function App() {
                     >
                       <div>
                         <p className="text-sm font-semibold" style={{ color: isCur ? BTJ_NAVY : "#2C2C2A" }}>
-                          {monthLabelFromKey(key)}{" "}
-                          {(() => {
+                          {agrupamento === "mes" ? monthLabelFromKey(key) : `Semana ${weekLabel(key)}`}{" "}
+                          {agrupamento === "mes" && (() => {
                             const st = statusPeriodo(key, envios, hojeKey);
                             if (st === "aberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>⏳ aberto</span>;
                             if (st === "enviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ enviado</span>;
                             if (st === "pendente") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⟳ envio pendente</span>;
                             return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>🔓 fechado · não enviado</span>;
                           })()}
+                          {agrupamento === "semana" && isCur && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>atual</span>}
                         </p>
                         <p className="text-[11px] text-gray-400">
                           {s.viagens} viagens · {s.trabalho.toLocaleString("pt-BR")} km
                           {s.pessoal != null && ` · pessoal ${s.pessoal.toLocaleString("pt-BR")} km`}
                           {" · "}R$ {s.receber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                         </p>
-                        {!isCur && (
+                        {agrupamento === "mes" && !isCur && (
                           <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
                             className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
                             📋 {statusPeriodo(key, envios, hojeKey) === "enviado" ? "Ver envio / reenviar" : "Revisar e enviar"} ›
@@ -2619,7 +2658,7 @@ export default function App() {
                             {inlineEdit?.id === r.id ? (
                               <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
                                 <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
-                                  Editando {formatDateShort(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
+                                  Editando {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
                                 </p>
                                 <div className="flex gap-1.5 mb-2">
                                   <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
@@ -2656,7 +2695,7 @@ export default function App() {
                               </div>
                             ) : r.soPedagio ? (
                               <div className="w-full flex items-center justify-between px-3.5 py-2">
-                                <span className="text-xs text-gray-400">{formatDateShort(r.data)} · sem viagem registrada</span>
+                                <span className="text-xs text-gray-400">{formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem registrada</span>
                                 <span className="text-xs font-medium" style={{ color: "#854F0B" }}>
                                   🛣️ R$ {(s.pedagioPorDia[r.data] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
                                 </span>
@@ -2666,7 +2705,7 @@ export default function App() {
                                 {isOpen(r) ? (
                                   <>
                                     <span className="text-xs" style={{ color: "#D85A30" }}>
-                                      ⚠ {formatDateShort(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                      ⚠ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
                                     </span>
                                     <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
                                   </>
@@ -2674,7 +2713,7 @@ export default function App() {
                                   <div className="w-full">
                                     <div className="flex items-center justify-between">
                                       <span className="text-xs text-gray-700 font-medium">
-                                        {formatDateShort(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
+                                        {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
                                       </span>
                                       <span className="text-xs text-gray-600 font-medium">
                                         {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
