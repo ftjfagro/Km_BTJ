@@ -3,7 +3,7 @@ import { registerSW } from "virtual:pwa-register";
 import * as XLSX from "xlsx";
 
 // ─── Config fixa (infraestrutura) ─────────────────────────────────────────────
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwDv9SdQANzfKb5oWQAU_7evjHN5BKLbW3kxb2eZbhVM1Weku0xUmDyHup7KRVTF8bPdw/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxoEGkkAeb6Vzz7-XgzDcZOVuxzFrT99_jlDQRExPX6xVCc4lTFextF0OEOIRBxTs5csg/exec";
 const SOLICITANTE = "Felipe Torquato Junqueira Franco";
 const SETOR = "Diretor";
 const CPF = "372.742.538-59";
