@@ -2088,6 +2088,7 @@ export default function App() {
   const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(periodKey(todayISO()));
+  const [menuAberto, setMenuAberto] = useState(false);
   const [pedagioAberto, setPedagioAberto] = useState(null); // data (iso) do dia com pedágios expandidos
   const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
 
@@ -2545,32 +2546,46 @@ export default function App() {
               <p className="text-[11px]" style={{ color: BTJ_LIGHT }}>
                 {usuario.setor || SETOR} · R$ {taxaVigente(config.taxas, config.colaboradores, usuario.nome, todayISO()).toFixed(2).replace(".", ",")}/km
               </p>
-              <button onClick={async () => { if (await confirmar("Sair da conta?")) { limparSessao(); setUsuario(null); } }}
-                className="text-[10px] underline" style={{ color: BTJ_LIGHT }}>
-                Sair
-              </button>
-              {ehAprovador && (
-                <button onClick={() => setScreen("aprovacoes")}
-                  className="text-[10px] underline ml-2" style={{ color: BTJ_LIGHT }}>
-                  ✓ Aprovações
-                </button>
-              )}
             </div>
           </div>
+          {/* Menu de conta (⋯) na linha do nome */}
+          <div className="relative">
+            <button onClick={() => setMenuAberto(v => !v)} aria-label="Menu"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-xl leading-none"
+              style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>
+              ⋯
+            </button>
+            {menuAberto && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 30 }} onClick={() => setMenuAberto(false)} />
+                <div className="absolute right-0 mt-1 w-48 bg-white rounded-xl shadow-lg overflow-hidden" style={{ zIndex: 31 }}>
+                  {ehAprovador && (
+                    <button onClick={() => { setMenuAberto(false); setScreen("aprovacoes"); }}
+                      className="w-full text-left px-4 py-2.5 text-sm border-b border-gray-100" style={{ color: BTJ_NAVY }}>
+                      ✓ Aprovações
+                    </button>
+                  )}
+                  <button onClick={async () => { setMenuAberto(false); if (await confirmar("Sair da conta?")) { limparSessao(); setUsuario(null); } }}
+                    className="w-full text-left px-4 py-2.5 text-sm" style={{ color: "#B3261E" }}>
+                    ⎋ Sair da conta
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+        {/* Linha 2: ações (home) ou Voltar (telas internas) */}
+        <div className="max-w-lg mx-auto flex items-center justify-end mt-1.5">
           {screen === "home" ? (
             <div className="flex gap-1.5">
-              <button
-                onClick={() => setScreen("resumos")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
-                style={{ background: BTJ_BLUE }}
-              >
+              <button onClick={() => setScreen("resumos")}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold text-white text-xs"
+                style={{ background: BTJ_BLUE }}>
                 <span className="text-sm">📊</span> Relatório
               </button>
-              <button
-                onClick={() => setScreen("despMenu")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs bg-white"
-                style={{ color: BTJ_NAVY, border: `0.5px solid ${BTJ_BLUE}` }}
-              >
+              <button onClick={() => setScreen("despMenu")}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold text-xs bg-white"
+                style={{ color: BTJ_NAVY, border: `0.5px solid ${BTJ_BLUE}` }}>
                 <span className="text-sm">💳</span> Despesas
               </button>
             </div>
@@ -2581,9 +2596,7 @@ export default function App() {
                 const voltarPraMenu = ["despPedagio", "despOutras", "despesa", "extrato"];
                 setScreen(voltarPraMenu.indexOf(screen) !== -1 ? "despMenu" : "home");
               }}
-              className="text-sm font-medium"
-              style={{ color: BTJ_BLUE }}
-            >
+              className="mr-auto text-sm font-medium" style={{ color: BTJ_BLUE }}>
               ‹ Voltar
             </button>
           )}
