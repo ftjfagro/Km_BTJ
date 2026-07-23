@@ -21,6 +21,7 @@ const BTJ_LIGHT = "#5fd0ff";
 const logoUrl = `${""}icons/icon.svg`;
 const MESES_PT = ["Janeiro", "Fevereiro", "Mar\xE7o", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const DIAS_ABREV = ["dom", "seg", "ter", "qua", "qui", "sex", "s\xE1b"];
+const TIPOS_DESPESA = ["Alimenta\xE7\xE3o", "Mobilidade", "Hotel", "Ped\xE1gio", "Outros"];
 const brl = (n) => "R$ " + (Number(n) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const kmFmt = (n) => (Number(n) || 0).toLocaleString("pt-BR");
 function periodLabelFromKey(key) {
@@ -54,19 +55,22 @@ function weekLabel(key) {
   return `${f(ini)} \u2013 ${f(fim)}`;
 }
 async function post(body) {
-  const res = await fetch(APPS_SCRIPT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body)
-  });
+  const res = await fetch(APPS_SCRIPT_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro na requisi\xE7\xE3o.");
   return data;
 }
 const apiLogin = (email, senha) => post({ action: "login", email, senha }).then((d) => d.colaborador);
-const apiListarEmissoes = (usuario, filtros) => post({ action: "listarEmissoes", usuario, ...filtros || {} });
+const apiListarEmissoes = (usuario) => post({ action: "listarEmissoes", usuario });
 const apiDetalheEmissao = (usuario, colaborador, periodo) => post({ action: "detalheEmissao", usuario, colaborador, periodo });
 const apiParecer = (usuario, colaborador, periodo, forcar) => post({ action: "parecerEmissao", usuario, colaborador, periodo, forcar: !!forcar });
+const apiDevolver = (usuario, colaborador, periodo, itens, observacao) => post({ action: "devolverParaRevisao", usuario, colaborador, periodo, itens, observacao });
+const apiReenviar = (usuario, colaborador, periodo, itens) => post({ action: "reenviarRevisao", usuario, colaborador, periodo, itens });
+const apiConcluir = (usuario, colaborador, periodo, observacao) => post({ action: "concluirEmissao", usuario, colaborador, periodo, observacao });
+const apiSaveLancamento = (payload) => post({ action: "save", ...payload });
+const apiUpdateDespesa = (payload) => post({ action: "updateDespesa", ...payload });
+const apiDeleteDespesa = (colaborador, id) => post({ action: "deleteDespesa", colaborador, id });
+const apiDeleteLancamento = (colaborador, data, carro) => post({ action: "deleteLancamento", colaborador, data, carro });
 const KEY_SESSAO = "km_dash_sessao_v1";
 function loadSessao() {
   try {
@@ -109,47 +113,17 @@ function DashLogin({ onLogin }) {
   }
   return /* @__PURE__ */ React.createElement("div", { className: "min-h-screen flex items-center justify-center px-6", style: { background: BTJ_NAVY } }, /* @__PURE__ */ React.createElement("div", { className: "w-full max-w-sm" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-center gap-3 mb-6" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white px-2.5 py-1.5 rounded-md" }, /* @__PURE__ */ React.createElement("img", { src: logoUrl, alt: "BTJ", className: "h-8", onError: (e) => {
     e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;font-size:20px;">BTJ</span>';
-  } })), /* @__PURE__ */ React.createElement("div", { className: "text-white" }, /* @__PURE__ */ React.createElement("p", { className: "font-semibold text-lg leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-sm", style: { color: BTJ_LIGHT } }, "an\xE1lise e aprova\xE7\xE3o"))), /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl p-6 shadow-lg" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500 mb-1" }, "E-mail corporativo"), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      type: "email",
-      value: email,
-      onChange: (e) => setEmail(e.target.value),
-      onKeyDown: (e) => {
-        if (e.key === "Enter") entrar();
-      },
-      placeholder: "voce@empresa.com.br",
-      autoCapitalize: "none",
-      autoCorrect: "off",
-      className: "w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm mb-4"
-    }
-  ), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500 mb-1" }, "Senha (4 primeiros n\xFAmeros do CPF)"), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      type: "password",
-      inputMode: "numeric",
-      maxLength: 4,
-      value: senha,
-      onChange: (e) => setSenha(e.target.value.replace(/\D/g, "")),
-      onKeyDown: (e) => {
-        if (e.key === "Enter") entrar();
-      },
-      placeholder: "\u2022\u2022\u2022\u2022",
-      className: "w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm mb-4 tracking-widest"
-    }
-  ), erro && /* @__PURE__ */ React.createElement("p", { className: "text-xs mb-3", style: { color: "#C62A2F" } }, "\u26A0 ", erro), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      onClick: entrar,
-      disabled: entrando,
-      className: "w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60",
-      style: { background: BTJ_BLUE }
-    },
-    entrando ? "Entrando..." : "Entrar"
-  )), /* @__PURE__ */ React.createElement("p", { className: "text-center text-[11px] mt-4", style: { color: BTJ_LIGHT } }, "Acesso a este painel \xE9 liberado conforme seu perfil.")));
+  } })), /* @__PURE__ */ React.createElement("div", { className: "text-white" }, /* @__PURE__ */ React.createElement("p", { className: "font-semibold text-lg leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-sm", style: { color: BTJ_LIGHT } }, "an\xE1lise e aprova\xE7\xE3o"))), /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl p-6 shadow-lg" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500 mb-1" }, "E-mail corporativo"), /* @__PURE__ */ React.createElement("input", { type: "email", value: email, onChange: (e) => setEmail(e.target.value), onKeyDown: (e) => {
+    if (e.key === "Enter") entrar();
+  }, placeholder: "voce@empresa.com.br", autoCapitalize: "none", autoCorrect: "off", className: "w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm mb-4" }), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500 mb-1" }, "Senha (4 primeiros n\xFAmeros do CPF)"), /* @__PURE__ */ React.createElement("input", { type: "password", inputMode: "numeric", maxLength: 4, value: senha, onChange: (e) => setSenha(e.target.value.replace(/\D/g, "")), onKeyDown: (e) => {
+    if (e.key === "Enter") entrar();
+  }, placeholder: "\u2022\u2022\u2022\u2022", className: "w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm mb-4 tracking-widest" }), erro && /* @__PURE__ */ React.createElement("p", { className: "text-xs mb-3", style: { color: "#C62A2F" } }, "\u26A0 ", erro), /* @__PURE__ */ React.createElement("button", { onClick: entrar, disabled: entrando, className: "w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60", style: { background: BTJ_BLUE } }, entrando ? "Entrando..." : "Entrar"))));
 }
 const STATUS_STYLE = {
   "enviado": { bg: "#E6F1FB", fg: "#0C447C", ic: "\u2713" },
+  "em revis\xE3o": { bg: "#FEF3E2", fg: "#854F0B", ic: "\u270E" },
+  "reenviado": { bg: "#EDE9FE", fg: "#5B21B6", ic: "\u21A9" },
+  "conclu\xEDdo": { bg: "#E1F5EE", fg: "#085041", ic: "\u2713\u2713" },
   "reabertura pendente": { bg: "#FEF3E2", fg: "#854F0B", ic: "\u23F3" },
   "reaberto": { bg: "#FFF7E6", fg: "#854F0B", ic: "\u{1F513}" },
   "reemitido": { bg: "#E1F5EE", fg: "#085041", ic: "\u21BB" }
@@ -158,59 +132,143 @@ function StatusBadge({ status }) {
   const s = STATUS_STYLE[status] || { bg: "#F1EFE8", fg: "#444441", ic: "\u2022" };
   return /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap", style: { background: s.bg, color: s.fg } }, s.ic, " ", status);
 }
-function Comprovante({ img, link }) {
-  const [erro, setErro] = useState(false);
-  if (img && !erro) {
-    return /* @__PURE__ */ React.createElement("a", { href: link || img, target: "_blank", rel: "noreferrer", className: "block" }, /* @__PURE__ */ React.createElement(
-      "img",
-      {
-        src: img,
-        alt: "comprovante",
-        onError: () => setErro(true),
-        className: "w-full h-24 object-cover rounded-lg border border-gray-200 bg-gray-50"
-      }
-    ));
-  }
-  if (link) {
-    return /* @__PURE__ */ React.createElement(
-      "a",
-      {
-        href: link,
-        target: "_blank",
-        rel: "noreferrer",
-        className: "flex items-center justify-center h-24 rounded-lg border border-dashed border-gray-300 text-xs text-gray-500"
-      },
-      "\u{1F9FE} abrir comprovante"
-    );
-  }
-  return /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-center h-24 rounded-lg border border-dashed text-xs", style: { borderColor: "#F5C97A", color: "#854F0B" } }, "\u26A0 sem comprovante");
-}
 function AvalKm({ aval }) {
   if (aval === "ok") return /* @__PURE__ */ React.createElement("span", { className: "text-[10px]", style: { color: "#0F6E56" } }, "\u2713 coerente");
   if (aval === "alto") return /* @__PURE__ */ React.createElement("span", { className: "text-[10px] font-medium", style: { color: "#854F0B" } }, "\u26A0 acima do trajeto");
   if (aval === "baixo") return /* @__PURE__ */ React.createElement("span", { className: "text-[10px] font-medium", style: { color: "#B3261E" } }, "\u26A0 abaixo do trajeto");
   return /* @__PURE__ */ React.createElement("span", { className: "text-[10px] text-gray-400" }, "sem refer\xEAncia");
 }
-function ViagensTabela({ viagens, tz }) {
-  return /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-left text-gray-500", style: { borderBottom: "1px solid #E7E5DE" } }, /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Data"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Rota"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Od\xF4metro"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "KM \xB7 Maps \xB7 m\xE9dia"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Ped\xE1gio t\xEDpico"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium text-right" }, "R$"))), /* @__PURE__ */ React.createElement("tbody", null, viagens.map((v, i) => /* @__PURE__ */ React.createElement("tr", { key: i, style: { borderBottom: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2 whitespace-nowrap" }, formatDateShort(v.data), " ", /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, weekdayAbrev(v.data))), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2" }, v.origem || "?", " \u2192 ", v.destino || "?"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2 text-gray-500 whitespace-nowrap" }, v.kmInicial != null ? kmFmt(v.kmInicial) : "\u2014", " \u2192 ", v.kmFinal != null ? kmFmt(v.kmFinal) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2" }, /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, kmFmt(v.km), " km"), /* @__PURE__ */ React.createElement("div", { className: "text-gray-400 text-[10px]" }, "Maps ", v.kmMaps != null ? `~${kmFmt(v.kmMaps)}` : "s/ref", " \xB7 m\xE9dia ", v.kmMediaHist != null ? `${kmFmt(v.kmMediaHist)} (${v.nHist})` : "s/hist"), /* @__PURE__ */ React.createElement(AvalKm, { aval: v.avaliacaoKm })), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2 text-gray-500" }, v.pedagioTipico != null ? brl(v.pedagioTipico) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-2 text-right whitespace-nowrap" }, brl(v.reembolso)))), viagens.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 6, className: "py-3 px-2 text-gray-400 text-center" }, "sem viagens no per\xEDodo"))));
+function Comprovante({ img, link }) {
+  const [erro, setErro] = useState(false);
+  if (img && !erro) return /* @__PURE__ */ React.createElement("a", { href: link || img, target: "_blank", rel: "noreferrer", className: "block" }, /* @__PURE__ */ React.createElement("img", { src: img, alt: "comprovante", onError: () => setErro(true), className: "w-full h-20 object-cover rounded-lg border border-gray-200 bg-gray-50" }));
+  if (link) return /* @__PURE__ */ React.createElement("a", { href: link, target: "_blank", rel: "noreferrer", className: "flex items-center justify-center h-20 rounded-lg border border-dashed border-gray-300 text-[11px] text-gray-500" }, "\u{1F9FE} abrir");
+  return /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-center h-20 rounded-lg border border-dashed text-[11px]", style: { borderColor: "#F5C97A", color: "#854F0B" } }, "sem comprovante");
 }
-function Detalhe({ usuario, colaborador, periodo }) {
+function EditViagem({ v, colaborador, onChanged }) {
+  const [origem, setOrigem] = useState(v.origem || "");
+  const [destino, setDestino] = useState(v.destino || "");
+  const [kmIni, setKmIni] = useState(v.kmInicial != null ? String(v.kmInicial) : "");
+  const [kmFim, setKmFim] = useState(v.kmFinal != null ? String(v.kmFinal) : "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  async function salvar() {
+    setBusy(true);
+    setMsg("");
+    try {
+      await apiSaveLancamento({ colaborador, carro: v.carro, data: v.data, tipo: v.tipo || "Viagem", origem, destino, kmInicial: kmIni === "" ? null : Number(kmIni), kmFinal: kmFim === "" ? null : Number(kmFim), observacao: v.observacao || "" });
+      setMsg("\u2713 salvo");
+      onChanged();
+    } catch (e) {
+      setMsg("erro: " + e.message);
+      setBusy(false);
+    }
+  }
+  async function excluir() {
+    if (!window.confirm("Excluir esta viagem?")) return;
+    setBusy(true);
+    try {
+      await apiDeleteLancamento(colaborador, v.data, v.carro);
+      onChanged();
+    } catch (e) {
+      setMsg("erro: " + e.message);
+      setBusy(false);
+    }
+  }
+  const inp = "border border-gray-200 rounded px-2 py-1 text-xs";
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-gray-200 p-2 bg-white" }, /* @__PURE__ */ React.createElement("div", { className: "text-[10px] text-gray-400 mb-1" }, v.carro, " \xB7 km ", v.data), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-1.5 items-center" }, /* @__PURE__ */ React.createElement("input", { className: inp + " w-28", value: origem, onChange: (e) => setOrigem(e.target.value), placeholder: "origem" }), /* @__PURE__ */ React.createElement("span", { className: "text-gray-400 text-xs" }, "\u2192"), /* @__PURE__ */ React.createElement("input", { className: inp + " w-28", value: destino, onChange: (e) => setDestino(e.target.value), placeholder: "destino" }), /* @__PURE__ */ React.createElement("input", { className: inp + " w-20", inputMode: "numeric", value: kmIni, onChange: (e) => setKmIni(e.target.value.replace(/\D/g, "")), placeholder: "km ini" }), /* @__PURE__ */ React.createElement("input", { className: inp + " w-20", inputMode: "numeric", value: kmFim, onChange: (e) => setKmFim(e.target.value.replace(/\D/g, "")), placeholder: "km fim" }), /* @__PURE__ */ React.createElement("button", { onClick: salvar, disabled: busy, className: "text-[11px] px-2.5 py-1 rounded text-white disabled:opacity-60", style: { background: BTJ_BLUE } }, busy ? "..." : "Salvar"), /* @__PURE__ */ React.createElement("button", { onClick: excluir, disabled: busy, className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500" }, "Excluir"), msg && /* @__PURE__ */ React.createElement("span", { className: "text-[10px] text-gray-500" }, msg)));
+}
+function EditDespesa({ d, colaborador, onChanged }) {
+  const [data, setData] = useState(d.data);
+  const [tipo, setTipo] = useState(d.tipo || "Outros");
+  const [valor, setValor] = useState(String(d.valor || ""));
+  const [descricao, setDescricao] = useState(d.descricao || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  async function salvar() {
+    setBusy(true);
+    setMsg("");
+    try {
+      await apiUpdateDespesa({ colaborador, id: d.id, data, tipo, valor: Number(String(valor).replace(",", ".")) || 0, descricao });
+      setMsg("\u2713 salvo");
+      onChanged();
+    } catch (e) {
+      setMsg("erro: " + e.message);
+      setBusy(false);
+    }
+  }
+  async function excluir() {
+    if (!window.confirm("Excluir esta despesa?")) return;
+    setBusy(true);
+    try {
+      await apiDeleteDespesa(colaborador, d.id);
+      onChanged();
+    } catch (e) {
+      setMsg("erro: " + e.message);
+      setBusy(false);
+    }
+  }
+  const inp = "border border-gray-200 rounded px-2 py-1 text-xs";
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-gray-200 p-2 bg-white" }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-1.5 items-center" }, /* @__PURE__ */ React.createElement("input", { type: "date", className: inp, value: data, onChange: (e) => setData(e.target.value) }), /* @__PURE__ */ React.createElement("select", { className: inp, value: tipo, onChange: (e) => setTipo(e.target.value) }, TIPOS_DESPESA.map((t) => /* @__PURE__ */ React.createElement("option", { key: t, value: t }, t))), /* @__PURE__ */ React.createElement("input", { className: inp + " w-24", inputMode: "decimal", value: valor, onChange: (e) => setValor(e.target.value), placeholder: "valor" }), /* @__PURE__ */ React.createElement("input", { className: inp + " flex-1 min-w-[8rem]", value: descricao, onChange: (e) => setDescricao(e.target.value), placeholder: "descri\xE7\xE3o" }), /* @__PURE__ */ React.createElement("button", { onClick: salvar, disabled: busy, className: "text-[11px] px-2.5 py-1 rounded text-white disabled:opacity-60", style: { background: BTJ_BLUE } }, busy ? "..." : "Salvar"), /* @__PURE__ */ React.createElement("button", { onClick: excluir, disabled: busy, className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500" }, "Excluir"), msg && /* @__PURE__ */ React.createElement("span", { className: "text-[10px] text-gray-500" }, msg)));
+}
+function ViagemRow({ v }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "grid items-start gap-2 py-1.5 text-xs", style: { gridTemplateColumns: "minmax(0,1fr) 118px 116px 84px" } }, /* @__PURE__ */ React.createElement("div", { className: "break-words" }, v.origem || "?", " \u2192 ", v.destino || "?", /* @__PURE__ */ React.createElement("div", { className: "text-[10px] text-gray-400" }, v.carro)), /* @__PURE__ */ React.createElement("div", { className: "text-gray-500 tabular-nums" }, v.kmInicial != null ? kmFmt(v.kmInicial) : "\u2014", " \u2192 ", v.kmFinal != null ? kmFmt(v.kmFinal) : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "tabular-nums" }, /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, kmFmt(v.km), " km"), /* @__PURE__ */ React.createElement("div", { className: "text-[10px] text-gray-400" }, "Maps ", v.kmMaps != null ? "~" + kmFmt(v.kmMaps) : "s/r", " \xB7 m\xE9d ", v.kmMediaHist != null ? kmFmt(v.kmMediaHist) : "s/h"), /* @__PURE__ */ React.createElement(AvalKm, { aval: v.avaliacaoKm })), /* @__PURE__ */ React.createElement("div", { className: "text-right tabular-nums font-medium" }, brl(v.reembolso)));
+}
+function DespesaRow({ d }) {
+  const semCompr = !d.comprovante && String(d.tipo).toLowerCase().indexOf("ped") !== 0;
+  return /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-2 py-1 text-xs" }, /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-0 break-words" }, /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, d.tipo), d.descricao ? /* @__PURE__ */ React.createElement("span", { className: "text-gray-500" }, " \xB7 ", d.descricao) : "", d.comprovante ? /* @__PURE__ */ React.createElement("a", { href: d.comprovante, target: "_blank", rel: "noreferrer", className: "ml-1", style: { color: BTJ_BLUE } }, "\u{1F9FE}") : semCompr ? /* @__PURE__ */ React.createElement("span", { className: "ml-1 text-[10px]", style: { color: "#B3261E" } }, "sem compr.") : null, d.justificativa ? /* @__PURE__ */ React.createElement("div", { className: "text-[10px]", style: { color: "#854F0B" } }, "\u2139 ", d.justificativa) : null), /* @__PURE__ */ React.createElement("div", { className: "text-right tabular-nums shrink-0 w-20 font-medium" }, brl(d.valor)));
+}
+function DiaBloco({ dia, viagens, despesas, modo, marcado, apontamento, onToggleMarcar, onApontamento, resposta, onResposta, colaborador, onChanged, apontamentoAprovador }) {
+  const flaggedColab = modo === "colaborador" && apontamentoAprovador != null;
+  const editavel = flaggedColab;
+  const kmDia = viagens.reduce((s, v) => s + (v.km || 0), 0);
+  const rDia = viagens.reduce((s, v) => s + (v.reembolso || 0), 0);
+  const dDia = despesas.reduce((s, x) => s + (x.valor || 0), 0);
+  const destaque = marcado || flaggedColab;
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-xl border p-3", style: { borderColor: destaque ? "#F5C97A" : "#EFEFEA", background: destaque ? "#FFFCF5" : "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-2 mb-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, modo === "aprovador" && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!marcado, onChange: (e) => onToggleMarcar(dia, e.target.checked) }), /* @__PURE__ */ React.createElement("span", { className: "font-medium text-sm", style: { color: BTJ_NAVY } }, formatDateShort(dia), " ", /* @__PURE__ */ React.createElement("span", { className: "text-gray-400 text-xs" }, weekdayAbrev(dia))), flaggedColab && /* @__PURE__ */ React.createElement("span", { className: "text-[10px] px-1.5 py-0.5 rounded-full", style: { background: "#FEF3E2", color: "#854F0B" } }, "marcado p/ revis\xE3o")), /* @__PURE__ */ React.createElement("div", { className: "text-[11px] text-gray-400 tabular-nums" }, kmFmt(kmDia), " km \xB7 ", brl(rDia + dDia))), flaggedColab && apontamentoAprovador && /* @__PURE__ */ React.createElement("div", { className: "text-[11px] mb-2 rounded p-2", style: { background: "#FEF3E2", color: "#854F0B" } }, /* @__PURE__ */ React.createElement("b", null, "Apontamento:"), " ", apontamentoAprovador), modo === "aprovador" && marcado && /* @__PURE__ */ React.createElement("textarea", { value: apontamento || "", onChange: (e) => onApontamento(dia, e.target.value), placeholder: "O que o colaborador precisa checar neste dia?", className: "w-full border border-gray-200 rounded px-2 py-1 text-xs mb-2", rows: 2 }), viagens.length > 0 && /* @__PURE__ */ React.createElement("div", null, editavel ? viagens.map((v, i) => /* @__PURE__ */ React.createElement("div", { className: "mb-1.5", key: i }, /* @__PURE__ */ React.createElement(EditViagem, { v, colaborador, onChanged }))) : viagens.map((v, i) => /* @__PURE__ */ React.createElement(ViagemRow, { key: i, v }))), despesas.length > 0 && /* @__PURE__ */ React.createElement("div", { className: viagens.length ? "border-t border-gray-100 pt-1 mt-1" : "" }, editavel ? despesas.map((x, i) => /* @__PURE__ */ React.createElement("div", { className: "mb-1.5", key: i }, /* @__PURE__ */ React.createElement(EditDespesa, { d: x, colaborador, onChanged }))) : despesas.map((x, i) => /* @__PURE__ */ React.createElement(DespesaRow, { key: i, d: x }))), flaggedColab && /* @__PURE__ */ React.createElement("div", { className: "mt-2 border-t border-dashed border-gray-200 pt-2" }, /* @__PURE__ */ React.createElement("label", { className: "flex items-center gap-2 text-[11px] text-gray-600 mb-1" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!(resposta && resposta.corrigido), onChange: (e) => onResposta(dia, { corrigido: e.target.checked, justificativa: resposta && resposta.justificativa || "" }) }), " J\xE1 corrigi os lan\xE7amentos deste dia"), /* @__PURE__ */ React.createElement("textarea", { value: resposta && resposta.justificativa || "", onChange: (e) => onResposta(dia, { corrigido: !!(resposta && resposta.corrigido), justificativa: e.target.value }), placeholder: "Justificativa (obrigat\xF3ria se mantiver como est\xE1)", className: "w-full border border-gray-200 rounded px-2 py-1 text-xs", rows: 2 })));
+}
+function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
   const [det, setDet] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [agrup, setAgrup] = useState("mes");
+  const [marcar, setMarcar] = useState({});
+  const [respostas, setRespostas] = useState({});
   const [parecer, setParecer] = useState(null);
   const [parecerBusy, setParecerBusy] = useState(false);
+  const [acaoBusy, setAcaoBusy] = useState(false);
+  const [acaoMsg, setAcaoMsg] = useState("");
+  async function carregar(seed) {
+    const d = await apiDetalheEmissao(usuario.email, colaborador, periodo);
+    setDet(d);
+    if (seed) {
+      const r = {};
+      if (d.revisao && d.revisao.itens) d.revisao.itens.forEach((it) => {
+        r[it.dia] = { corrigido: !!it.corrigido, justificativa: it.justificativa || "" };
+      });
+      setRespostas(r);
+      setMarcar({});
+    }
+    return d;
+  }
+  const recarregar = () => carregar(false).catch((e) => setAcaoMsg("erro: " + e.message));
   useEffect(() => {
     let vivo = true;
     setCarregando(true);
     setErro("");
     setDet(null);
     setParecer(null);
+    setAcaoMsg("");
     apiDetalheEmissao(usuario.email, colaborador, periodo).then((d) => {
-      if (vivo) setDet(d);
+      if (!vivo) return;
+      setDet(d);
+      const r = {};
+      if (d.revisao && d.revisao.itens) d.revisao.itens.forEach((it) => {
+        r[it.dia] = { corrigido: !!it.corrigido, justificativa: it.justificativa || "" };
+      });
+      setRespostas(r);
+      setMarcar({});
     }).catch((e) => {
-      if (vivo) setErro(e.message || "Erro ao abrir a emiss\xE3o.");
+      if (vivo) setErro(e.message);
     }).finally(() => {
       if (vivo) setCarregando(false);
     });
@@ -218,70 +276,137 @@ function Detalhe({ usuario, colaborador, periodo }) {
       vivo = false;
     };
   }, [colaborador, periodo]);
-  async function gerarParecer(forcar) {
-    setParecerBusy(true);
-    try {
-      const r = await apiParecer(usuario.email, colaborador, periodo, forcar);
-      setParecer(r);
-    } catch (e) {
-      setParecer({ parecer: "Erro ao gerar: " + (e.message || ""), erro: true });
-    } finally {
-      setParecerBusy(false);
-    }
-  }
+  const dias = useMemo(() => {
+    if (!det) return [];
+    const map = {};
+    det.viagens.forEach((v) => {
+      (map[v.data] = map[v.data] || { dia: v.data, viagens: [], despesas: [] }).viagens.push(v);
+    });
+    det.despesas.forEach((x) => {
+      (map[x.data] = map[x.data] || { dia: x.data, viagens: [], despesas: [] }).despesas.push(x);
+    });
+    return Object.values(map).sort((a2, b) => a2.dia < b.dia ? -1 : 1);
+  }, [det]);
   if (carregando) return /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando detalhe\u2026");
   if (erro) return /* @__PURE__ */ React.createElement("div", { className: "p-6 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro);
   if (!det) return null;
   const g = det.totaisGravados, a = det.totaisAtuais;
   const eps = 5e-3;
-  const diffK = Math.abs(a.km - g.km) > eps, diffR = Math.abs(a.reembolso - g.reembolso) > eps;
-  const diffD = Math.abs(a.despesas - g.despesas) > eps, diffT = Math.abs(a.total - g.total) > eps;
+  const dK = Math.abs(a.km - g.km) > eps, dR = Math.abs(a.reembolso - g.reembolso) > eps, dD = Math.abs(a.despesas - g.despesas) > eps, dT = Math.abs(a.total - g.total) > eps;
   const alertasRota = det.viagens.filter((v) => v.avaliacaoKm === "alto" || v.avaliacaoKm === "baixo").length;
   const diasViagem = new Set(det.viagens.filter((v) => v.km > 0).map((v) => v.data));
   const pedSemViagem = [...new Set(det.despesas.filter((d) => (d.tipo || "").toLowerCase().indexOf("ped") === 0 && !diasViagem.has(d.data)).map((d) => d.data))].length;
   const semComprovante = det.despesas.filter((d) => !d.comprovante && (d.tipo || "").toLowerCase().indexOf("ped") !== 0).length;
-  const cell = (v, diff) => /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right", style: diff ? { background: "#FEF3E2", color: "#854F0B", fontWeight: 500 } : {} }, v);
-  const semanas = {};
-  det.viagens.forEach((v) => {
-    const k = weekKey(v.data);
-    (semanas[k] = semanas[k] || []).push(v);
+  const rev = det.revisao;
+  const ehDono = usuario.email && String(usuario.email).toLowerCase() === String(det.colaborador).toLowerCase();
+  const emRevisao = rev && rev.status === "em revis\xE3o";
+  let modo = "leitura";
+  if (emRevisao && ehDono) modo = "colaborador";
+  else if (souAprovador && !emRevisao) modo = "aprovador";
+  const apontamentoPorDia = {};
+  if (rev && rev.itens) rev.itens.forEach((it) => {
+    apontamentoPorDia[it.dia] = it.apontamento || "";
   });
-  const semanasOrd = Object.keys(semanas).sort();
-  return /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "w-11 h-11 rounded-full flex items-center justify-center text-sm font-semibold", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(det.nomeColaborador)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "font-semibold", style: { color: BTJ_NAVY } }, det.nomeColaborador), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500" }, det.setor || "\u2014", " \xB7 CPF ", det.cpf || "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500" }, det.periodoLabel, " \xB7 ", det.periodoInicio, " a ", det.periodoFim), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-400" }, "emitido em ", det.emitidoEm), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5 justify-end mt-1.5" }, det.pdfUrl && /* @__PURE__ */ React.createElement("button", { onClick: () => window.open(det.pdfUrl, "_blank"), className: "text-[11px] px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600" }, "\u{1F4C4} PDF"), det.xlsxUrl && /* @__PURE__ */ React.createElement("button", { onClick: () => window.open(det.xlsxUrl, "_blank"), className: "text-[11px] px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600" }, "\u{1F4CA} Excel")))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 mt-4" }, /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: diffT ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#E1F5EE", color: "#085041" } }, diffT ? "\u26A0 emitido \xD7 atual: diverg\xEAncia" : "\u2713 emitido \xD7 atual: confere"), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: alertasRota ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#E1F5EE", color: "#085041" } }, alertasRota ? `\u26A0 rota \xD7 km: ${alertasRota} alerta${alertasRota > 1 ? "s" : ""}` : "\u2713 rota \xD7 km: ok"), pedSemViagem > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: { background: "#FEF3E2", color: "#854F0B" } }, "\u26A0 ped\xE1gio sem viagem: ", pedSemViagem, " dia(s)"), semComprovante > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: { background: "#FEF3E2", color: "#854F0B" } }, "\u26A0 sem comprovante: ", semComprovante), /* @__PURE__ */ React.createElement(StatusBadge, { status: det.status })), /* @__PURE__ */ React.createElement("div", { className: "mt-5" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500 mb-1" }, "Confer\xEAncia \xB7 emitido \xD7 atual"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-gray-500", style: { borderBottom: "1px solid #E7E5DE" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-left font-medium" }), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "KM"), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Reembolso"), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Despesas"), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Total"))), /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", { style: { borderBottom: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-gray-500" }, "Emitido"), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right" }, kmFmt(g.km)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right" }, brl(g.reembolso)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right" }, brl(g.despesas)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right" }, brl(g.total))), /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-gray-500" }, "Atual"), cell(kmFmt(a.km), diffK), cell(brl(a.reembolso), diffR), cell(brl(a.despesas), diffD), cell(brl(a.total), diffT))))), /* @__PURE__ */ React.createElement("div", { className: "mt-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500" }, "Viagens"), /* @__PURE__ */ React.createElement("div", { className: "inline-flex rounded-lg overflow-hidden border", style: { borderColor: BTJ_BLUE } }, [["mes", "M\xEAs"], ["semana", "Semana"]].map(([v, r]) => /* @__PURE__ */ React.createElement(
-    "button",
+  const toggleMarcar = (dia, checked) => setMarcar((prev) => {
+    const n = { ...prev };
+    if (checked) {
+      if (!(dia in n)) n[dia] = "";
+    } else {
+      delete n[dia];
+    }
+    return n;
+  });
+  const setApont = (dia, val) => setMarcar((prev) => ({ ...prev, [dia]: val }));
+  const setResp = (dia, obj) => setRespostas((prev) => ({ ...prev, [dia]: obj }));
+  async function devolver() {
+    const itens = Object.keys(marcar).map((dia) => ({ dia, apontamento: marcar[dia] || "" }));
+    if (!itens.length) {
+      setAcaoMsg("Marque ao menos um dia.");
+      return;
+    }
+    setAcaoBusy(true);
+    setAcaoMsg("");
+    try {
+      await apiDevolver(usuario.email, colaborador, periodo, itens);
+      setAcaoMsg("\u2713 Devolvido para revis\xE3o.");
+      await carregar(true);
+    } catch (e) {
+      setAcaoMsg("erro: " + e.message);
+    } finally {
+      setAcaoBusy(false);
+    }
+  }
+  async function concluir() {
+    if (!window.confirm("Concluir / dar baixa neste relat\xF3rio?")) return;
+    setAcaoBusy(true);
+    setAcaoMsg("");
+    try {
+      await apiConcluir(usuario.email, colaborador, periodo);
+      setAcaoMsg("\u2713 Conclu\xEDdo.");
+      await carregar(true);
+    } catch (e) {
+      setAcaoMsg("erro: " + e.message);
+    } finally {
+      setAcaoBusy(false);
+    }
+  }
+  async function reenviar() {
+    const itens = (rev.itens || []).map((it) => ({ dia: it.dia, corrigido: !!(respostas[it.dia] && respostas[it.dia].corrigido), justificativa: respostas[it.dia] && respostas[it.dia].justificativa || "" }));
+    const faltando = itens.find((it) => !it.corrigido && !String(it.justificativa).trim());
+    if (faltando) {
+      setAcaoMsg("O dia " + formatDateShort(faltando.dia) + " precisa ser corrigido (marque a caixa) ou justificado.");
+      return;
+    }
+    setAcaoBusy(true);
+    setAcaoMsg("");
+    try {
+      await apiReenviar(usuario.email, colaborador, periodo, itens);
+      setAcaoMsg("\u2713 Reenviado para aprova\xE7\xE3o.");
+      await carregar(true);
+    } catch (e) {
+      setAcaoMsg("erro: " + e.message);
+    } finally {
+      setAcaoBusy(false);
+    }
+  }
+  async function gerarParecer(forcar) {
+    setParecerBusy(true);
+    try {
+      setParecer(await apiParecer(usuario.email, colaborador, periodo, forcar));
+    } catch (e) {
+      setParecer({ parecer: "Erro: " + e.message, erro: true });
+    } finally {
+      setParecerBusy(false);
+    }
+  }
+  const cell = (v, diff) => /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right tabular-nums", style: diff ? { background: "#FEF3E2", color: "#854F0B", fontWeight: 500 } : {} }, v);
+  const bloco = (g2) => /* @__PURE__ */ React.createElement(
+    DiaBloco,
     {
-      key: v,
-      onClick: () => setAgrup(v),
-      className: "px-2.5 py-0.5 text-[11px] font-medium",
-      style: agrup === v ? { background: BTJ_BLUE, color: "#fff" } : { background: "#fff", color: BTJ_NAVY }
-    },
-    r
-  )))), agrup === "mes" ? /* @__PURE__ */ React.createElement(ViagensTabela, { viagens: det.viagens }) : semanasOrd.map((k) => {
-    const vs = semanas[k];
-    const subKm = vs.reduce((s, v) => s + (v.km || 0), 0);
-    const subR = vs.reduce((s, v) => s + (v.reembolso || 0), 0);
-    return /* @__PURE__ */ React.createElement("div", { key: k, className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-[11px] px-2 py-1 rounded", style: { background: "#F5F7FA" } }, /* @__PURE__ */ React.createElement("span", { className: "font-medium", style: { color: BTJ_NAVY } }, "Semana ", weekLabel(k)), /* @__PURE__ */ React.createElement("span", { className: "text-gray-500" }, kmFmt(subKm), " km \xB7 ", brl(subR))), /* @__PURE__ */ React.createElement(ViagensTabela, { viagens: vs }));
-  })), /* @__PURE__ */ React.createElement("div", { className: "mt-5" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500 mb-2" }, "Despesas"), /* @__PURE__ */ React.createElement("div", { className: "grid gap-3", style: { gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" } }, det.despesas.map((d, i) => {
-    const just = d.justificativa && String(d.justificativa).trim();
-    return /* @__PURE__ */ React.createElement("div", { key: i, className: "border border-gray-100 rounded-xl p-2.5" }, /* @__PURE__ */ React.createElement(Comprovante, { img: d.comprovanteImg, link: d.comprovante }), /* @__PURE__ */ React.createElement("p", { className: "text-xs font-medium mt-2" }, d.tipo), /* @__PURE__ */ React.createElement("p", { className: "text-xs" }, brl(d.valor)), just ? /* @__PURE__ */ React.createElement("p", { className: "text-[10px] mt-1", style: { color: "#854F0B" } }, "\u2139 ", just) : null, !d.comprovante && (d.tipo || "").toLowerCase().indexOf("ped") !== 0 ? /* @__PURE__ */ React.createElement("p", { className: "text-[10px] mt-1", style: { color: "#B3261E" } }, "\u26A0 sem comprovante") : null);
-  }), det.despesas.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-400" }, "sem despesas no per\xEDodo"))), det.historicoReaberturas && det.historicoReaberturas.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-5" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500 mb-1" }, "Reaberturas"), det.historicoReaberturas.map((r, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "text-[11px] text-gray-600" }, "\u2022 ", r.status, " \u2014 \u201C", r.motivo, "\u201D ", r.decididoEm ? `\xB7 decidido ${r.decididoEm}${r.decididoPor ? " por " + r.decididoPor : ""}` : `\xB7 solicitado ${r.solicitadoEm}`))), /* @__PURE__ */ React.createElement("div", { className: "mt-5 pt-4", style: { borderTop: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500" }, "Parecer (IA)"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5" }, /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      onClick: () => gerarParecer(false),
-      disabled: parecerBusy,
-      className: "text-[11px] px-3 py-1 rounded-lg font-medium text-white disabled:opacity-60",
-      style: { background: BTJ_BLUE }
-    },
-    parecerBusy ? "Gerando\u2026" : parecer ? "Atualizar" : "Gerar parecer"
-  ), parecer && !parecer.erro && /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      onClick: () => gerarParecer(true),
-      disabled: parecerBusy,
-      className: "text-[11px] px-2 py-1 rounded-lg border border-gray-200 text-gray-500"
-    },
-    "recalcular"
-  ))), parecer && /* @__PURE__ */ React.createElement("div", { className: "mt-2 text-sm rounded-xl p-3", style: { background: "#F7F9FB", color: "#1F2937" } }, parecer.parecer, parecer.cacheado ? /* @__PURE__ */ React.createElement("span", { className: "block text-[10px] text-gray-400 mt-1" }, "(do cache \u2014 clique em recalcular pra for\xE7ar)") : null), !parecer && /* @__PURE__ */ React.createElement("p", { className: "text-[11px] text-gray-400 mt-1" }, "Escreve um resumo em texto por cima dos n\xFAmeros acima. N\xE3o inventa dados; fica em cache.")));
+      key: g2.dia,
+      dia: g2.dia,
+      viagens: g2.viagens,
+      despesas: g2.despesas,
+      modo,
+      marcado: Object.prototype.hasOwnProperty.call(marcar, g2.dia),
+      apontamento: marcar[g2.dia],
+      onToggleMarcar: toggleMarcar,
+      onApontamento: setApont,
+      resposta: respostas[g2.dia],
+      onResposta: setResp,
+      colaborador,
+      onChanged: recarregar,
+      apontamentoAprovador: Object.prototype.hasOwnProperty.call(apontamentoPorDia, g2.dia) ? apontamentoPorDia[g2.dia] : null
+    }
+  );
+  return /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "w-11 h-11 rounded-full flex items-center justify-center text-sm font-semibold", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(det.nomeColaborador)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "font-semibold", style: { color: BTJ_NAVY } }, det.nomeColaborador), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500" }, det.setor || "\u2014", " \xB7 CPF ", det.cpf || "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-500" }, det.periodoLabel, " \xB7 ", det.periodoInicio, " a ", det.periodoFim), /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-400" }, "emitido em ", det.emitidoEm), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5 justify-end mt-1.5" }, det.pdfUrl && /* @__PURE__ */ React.createElement("button", { onClick: () => window.open(det.pdfUrl, "_blank"), className: "text-[11px] px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600" }, "\u{1F4C4} PDF"), det.xlsxUrl && /* @__PURE__ */ React.createElement("button", { onClick: () => window.open(det.xlsxUrl, "_blank"), className: "text-[11px] px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600" }, "\u{1F4CA} Excel")))), rev && /* @__PURE__ */ React.createElement("div", { className: "rounded-xl p-3 mt-4", style: { background: (STATUS_STYLE[rev.status] || {}).bg || "#F1EFE8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement(StatusBadge, { status: rev.status }), rev.status === "em revis\xE3o" && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-700" }, ehDono ? "corrija ou justifique os dias marcados abaixo e reenvie" : "aguardando o colaborador corrigir"), rev.status === "reenviado" && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-700" }, souAprovador ? "o colaborador respondeu \u2014 confira e conclua, ou devolva de novo" : "aguardando aprova\xE7\xE3o")), rev.observacao && /* @__PURE__ */ React.createElement("div", { className: "text-[11px] text-gray-600 mt-1" }, "Obs.: ", rev.observacao), /* @__PURE__ */ React.createElement("div", { className: "text-[10px] text-gray-400 mt-1" }, rev.solicitadoPorNome ? "solicitado por " + rev.solicitadoPorNome + " \xB7 " + rev.solicitadoEm : "", rev.reenviadoEm ? " \xB7 reenviado " + rev.reenviadoEm : "", rev.decididoEm ? " \xB7 conclu\xEDdo " + rev.decididoEm + (rev.decididoPorNome ? " por " + rev.decididoPorNome : "") : "")), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 mt-4" }, /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: dT ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#E1F5EE", color: "#085041" } }, dT ? "\u26A0 emitido \xD7 atual: diverg\xEAncia" : "\u2713 emitido \xD7 atual: confere"), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: alertasRota ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#E1F5EE", color: "#085041" } }, alertasRota ? `\u26A0 rota \xD7 km: ${alertasRota} alerta${alertasRota > 1 ? "s" : ""}` : "\u2713 rota \xD7 km: ok"), pedSemViagem > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: { background: "#FEF3E2", color: "#854F0B" } }, "\u26A0 ped\xE1gio sem viagem: ", pedSemViagem, " dia(s)"), semComprovante > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2.5 py-1 rounded-full", style: { background: "#FEF3E2", color: "#854F0B" } }, "\u26A0 sem comprovante: ", semComprovante)), /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500 mb-1" }, "Confer\xEAncia \xB7 emitido \xD7 atual"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs table-fixed", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("colgroup", null, /* @__PURE__ */ React.createElement("col", { style: { width: "22%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "18%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "22%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "20%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "18%" } })), /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-gray-500", style: { borderBottom: "1px solid #E7E5DE" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-left font-medium" }), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "KM"), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Reemb."), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Despesas"), /* @__PURE__ */ React.createElement("th", { className: "py-1.5 px-2 text-right font-medium" }, "Total"))), /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", { style: { borderBottom: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-gray-500" }, "Emitido"), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right tabular-nums" }, kmFmt(g.km)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right tabular-nums" }, brl(g.reembolso)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right tabular-nums" }, brl(g.despesas)), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-right tabular-nums" }, brl(g.total))), /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-2 text-gray-500" }, "Atual"), cell(kmFmt(a.km), dK), cell(brl(a.reembolso), dR), cell(brl(a.despesas), dD), cell(brl(a.total), dT))))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap mt-4" }, modo === "aprovador" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: devolver, disabled: acaoBusy, className: "text-xs px-3 py-1.5 rounded-lg font-medium text-white disabled:opacity-60", style: { background: "#B45309" } }, "Devolver para revis\xE3o", Object.keys(marcar).length ? " (" + Object.keys(marcar).length + ")" : ""), /* @__PURE__ */ React.createElement("button", { onClick: concluir, disabled: acaoBusy, className: "text-xs px-3 py-1.5 rounded-lg font-medium text-white disabled:opacity-60", style: { background: "#0F766E" } }, "Concluir"), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-500" }, "marque os dias abaixo e escreva o apontamento")), modo === "colaborador" && /* @__PURE__ */ React.createElement("button", { onClick: reenviar, disabled: acaoBusy, className: "text-xs px-3 py-1.5 rounded-lg font-medium text-white disabled:opacity-60", style: { background: BTJ_BLUE } }, "Reenviar para aprova\xE7\xE3o"), acaoMsg && /* @__PURE__ */ React.createElement("span", { className: "text-[11px]", style: { color: acaoMsg.indexOf("erro") === 0 ? "#B3261E" : "#0F6E56" } }, acaoMsg)), /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500" }, "Por dia"), /* @__PURE__ */ React.createElement("div", { className: "inline-flex rounded-lg overflow-hidden border", style: { borderColor: BTJ_BLUE } }, [["mes", "M\xEAs"], ["semana", "Semana"]].map(([v, r]) => /* @__PURE__ */ React.createElement("button", { key: v, onClick: () => setAgrup(v), className: "px-2.5 py-0.5 text-[11px] font-medium", style: agrup === v ? { background: BTJ_BLUE, color: "#fff" } : { background: "#fff", color: BTJ_NAVY } }, r)))), agrup === "mes" ? /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, dias.map(bloco)) : Object.keys(dias.reduce((acc, gg) => {
+    (acc[weekKey(gg.dia)] = acc[weekKey(gg.dia)] || []).push(gg);
+    return acc;
+  }, {})).sort().map((k) => {
+    const gs = dias.filter((gg) => weekKey(gg.dia) === k);
+    const km = gs.reduce((s, gg) => s + gg.viagens.reduce((x, v) => x + (v.km || 0), 0), 0);
+    return /* @__PURE__ */ React.createElement("div", { key: k, className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-[11px] px-2 py-1 rounded mb-1", style: { background: "#F5F7FA" } }, /* @__PURE__ */ React.createElement("span", { className: "font-medium", style: { color: BTJ_NAVY } }, "Semana ", weekLabel(k)), /* @__PURE__ */ React.createElement("span", { className: "text-gray-500 tabular-nums" }, kmFmt(km), " km")), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, gs.map(bloco)));
+  }), dias.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-xs text-gray-400" }, "sem lan\xE7amentos no per\xEDodo")), /* @__PURE__ */ React.createElement("div", { className: "mt-5 pt-4", style: { borderTop: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("p", { className: "text-xs font-semibold text-gray-500" }, "Parecer (IA)"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5" }, /* @__PURE__ */ React.createElement("button", { onClick: () => gerarParecer(false), disabled: parecerBusy, className: "text-[11px] px-3 py-1 rounded-lg font-medium text-white disabled:opacity-60", style: { background: BTJ_BLUE } }, parecerBusy ? "Gerando\u2026" : parecer ? "Atualizar" : "Gerar parecer"), parecer && !parecer.erro && /* @__PURE__ */ React.createElement("button", { onClick: () => gerarParecer(true), disabled: parecerBusy, className: "text-[11px] px-2 py-1 rounded-lg border border-gray-200 text-gray-500" }, "recalcular"))), parecer && /* @__PURE__ */ React.createElement("div", { className: "mt-2 text-sm rounded-xl p-3", style: { background: "#F7F9FB", color: "#1F2937" } }, parecer.parecer, parecer.cacheado ? /* @__PURE__ */ React.createElement("span", { className: "block text-[10px] text-gray-400 mt-1" }, "(do cache)") : null)));
 }
 function Painel({ usuario, onSair }) {
   const [dados, setDados] = useState(null);
@@ -291,50 +416,29 @@ function Painel({ usuario, onSair }) {
   const [fColab, setFColab] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [sel, setSel] = useState(null);
-  useEffect(() => {
-    let vivo = true;
+  function carregarLista(manterSel) {
     setCarregando(true);
     setErro("");
     apiListarEmissoes(usuario.email).then((d) => {
-      if (vivo) {
-        setDados(d);
-        if (d.emissoes.length) setSel({ colaborador: d.emissoes[0].colaborador, periodo: d.emissoes[0].periodo });
-      }
-    }).catch((e) => {
-      if (vivo) setErro(e.message || "Erro ao carregar emiss\xF5es.");
-    }).finally(() => {
-      if (vivo) setCarregando(false);
-    });
-    return () => {
-      vivo = false;
-    };
+      setDados(d);
+      if (!manterSel && d.emissoes.length) setSel({ colaborador: d.emissoes[0].colaborador, periodo: d.emissoes[0].periodo });
+    }).catch((e) => setErro(e.message)).finally(() => setCarregando(false));
+  }
+  useEffect(() => {
+    carregarLista(false);
   }, []);
   const aprovador = dados ? dados.aprovador : false;
   const lista = useMemo(() => {
     if (!dados) return [];
-    return dados.emissoes.filter(
-      (e) => (!fPeriodo || e.periodo === fPeriodo) && (!fColab || e.colaborador === fColab) && (!fStatus || e.status === fStatus)
-    );
+    return dados.emissoes.filter((e) => (!fPeriodo || e.periodo === fPeriodo) && (!fColab || e.colaborador === fColab) && (!fStatus || e.status === fStatus));
   }, [dados, fPeriodo, fColab, fStatus]);
   const selKey = sel ? `${sel.colaborador}|${sel.periodo}` : "";
   return /* @__PURE__ */ React.createElement("div", { className: "min-h-screen", style: { background: "#F4F6FA" } }, /* @__PURE__ */ React.createElement("div", { style: { background: BTJ_NAVY }, className: "text-white px-5 py-3" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white px-2 py-1 rounded-sm" }, /* @__PURE__ */ React.createElement("img", { src: logoUrl, alt: "BTJ", className: "h-5", onError: (e) => {
     e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>';
-  } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-sm font-semibold leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, aprovador ? "aprovador \u2014 todas as emiss\xF5es" : "minhas emiss\xF5es"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-sm leading-tight" }, String(usuario.nome).split(" ").slice(0, 2).join(" ")), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, usuario.setor || "")), /* @__PURE__ */ React.createElement("button", { onClick: onSair, className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u238B Sair")))), /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex gap-4 px-4 py-4" }, /* @__PURE__ */ React.createElement("aside", { className: "w-56 shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium", style: { background: "#E6F1FB", color: "#0C447C" } }, "\u{1F4C4} Emiss\xF5es"), /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 uppercase tracking-wide mt-3 mb-1 px-1" }, "Filtros"), /* @__PURE__ */ React.createElement("select", { value: fPeriodo, onChange: (e) => setFPeriodo(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Per\xEDodo \xB7 todos"), dados && dados.filtros.periodos.map((p) => /* @__PURE__ */ React.createElement("option", { key: p, value: p }, periodLabelFromKey(p)))), aprovador && /* @__PURE__ */ React.createElement("select", { value: fColab, onChange: (e) => setFColab(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Colaborador \xB7 todos"), dados && dados.filtros.colaboradores.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.email, value: c.email }, String(c.nome).split(" ").slice(0, 2).join(" ")))), /* @__PURE__ */ React.createElement("select", { value: fStatus, onChange: (e) => setFStatus(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Status \xB7 todos"), ["enviado", "reabertura pendente", "reaberto", "reemitido"].map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }, s))), /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 mt-3 px-1 leading-relaxed" }, "Reaberturas continuam sendo aprovadas no app."))), /* @__PURE__ */ React.createElement("main", { className: "flex-1 min-w-0" }, carregando && /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando emiss\xF5es\u2026"), erro && /* @__PURE__ */ React.createElement("div", { className: "p-4 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro), dados && !carregando && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2 text-[11px] text-gray-400 border-b border-gray-100" }, lista.length, " emiss\xE3o(\xF5es)"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-left text-gray-500", style: { borderBottom: "1px solid #E7E5DE" } }, /* @__PURE__ */ React.createElement("th", { className: "py-2 px-4 font-medium" }, "Colaborador"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Per\xEDodo"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium text-right" }, "Total"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, lista.map((e) => {
+  } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-sm font-semibold leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, aprovador ? "aprovador \u2014 todas as emiss\xF5es" : "minhas emiss\xF5es"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-sm leading-tight" }, String(usuario.nome).split(" ").slice(0, 2).join(" ")), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, usuario.setor || "")), /* @__PURE__ */ React.createElement("button", { onClick: () => carregarLista(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u21BB Atualizar"), /* @__PURE__ */ React.createElement("button", { onClick: onSair, className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u238B Sair")))), /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex gap-4 px-4 py-4" }, /* @__PURE__ */ React.createElement("aside", { className: "w-56 shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium", style: { background: "#E6F1FB", color: "#0C447C" } }, "\u{1F4C4} Emiss\xF5es"), /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 uppercase tracking-wide mt-3 mb-1 px-1" }, "Filtros"), /* @__PURE__ */ React.createElement("select", { value: fPeriodo, onChange: (e) => setFPeriodo(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Per\xEDodo \xB7 todos"), dados && dados.filtros.periodos.map((p) => /* @__PURE__ */ React.createElement("option", { key: p, value: p }, periodLabelFromKey(p)))), aprovador && /* @__PURE__ */ React.createElement("select", { value: fColab, onChange: (e) => setFColab(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Colaborador \xB7 todos"), dados && dados.filtros.colaboradores.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.email, value: c.email }, String(c.nome).split(" ").slice(0, 2).join(" ")))), /* @__PURE__ */ React.createElement("select", { value: fStatus, onChange: (e) => setFStatus(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Status \xB7 todos"), ["enviado", "em revis\xE3o", "reenviado", "conclu\xEDdo"].map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }, s))))), /* @__PURE__ */ React.createElement("main", { className: "flex-1 min-w-0" }, carregando && /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando emiss\xF5es\u2026"), erro && /* @__PURE__ */ React.createElement("div", { className: "p-4 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro), dados && !carregando && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2 text-[11px] text-gray-400 border-b border-gray-100" }, lista.length, " emiss\xE3o(\xF5es)"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs table-fixed", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("colgroup", null, /* @__PURE__ */ React.createElement("col", { style: { width: "40%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "20%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "18%" } }), /* @__PURE__ */ React.createElement("col", { style: { width: "22%" } })), /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-left text-gray-500", style: { borderBottom: "1px solid #E7E5DE" } }, /* @__PURE__ */ React.createElement("th", { className: "py-2 px-4 font-medium" }, "Colaborador"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Per\xEDodo"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium text-right" }, "Total"), /* @__PURE__ */ React.createElement("th", { className: "py-2 px-2 font-medium" }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, lista.map((e) => {
     const ativo = sel && sel.colaborador === e.colaborador && sel.periodo === e.periodo;
-    return /* @__PURE__ */ React.createElement(
-      "tr",
-      {
-        key: `${e.colaborador}|${e.periodo}`,
-        onClick: () => setSel({ colaborador: e.colaborador, periodo: e.periodo }),
-        className: "cursor-pointer",
-        style: { borderBottom: "1px solid #F1EFE8", background: ativo ? "#E6F1FB" : "transparent" }
-      },
-      /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(e.nomeColaborador)), /* @__PURE__ */ React.createElement("span", null, e.nomeColaborador))),
-      /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2 text-gray-500" }, e.periodoLabel),
-      /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2 text-right font-medium" }, brl(e.total)),
-      /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2" }, /* @__PURE__ */ React.createElement(StatusBadge, { status: e.status }))
-    );
-  }), lista.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "py-8 px-4 text-center text-gray-400" }, "Nenhuma emiss\xE3o pra mostrar. Emita um relat\xF3rio (pelo app) pra ele aparecer aqui."))))), sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo })))));
+    return /* @__PURE__ */ React.createElement("tr", { key: `${e.colaborador}|${e.periodo}`, onClick: () => setSel({ colaborador: e.colaborador, periodo: e.periodo }), className: "cursor-pointer", style: { borderBottom: "1px solid #F1EFE8", background: ativo ? "#E6F1FB" : "transparent" } }, /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 min-w-0" }, /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(e.nomeColaborador)), /* @__PURE__ */ React.createElement("span", { className: "truncate" }, e.nomeColaborador))), /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2 text-gray-500" }, e.periodoLabel), /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2 text-right font-medium tabular-nums" }, brl(e.total)), /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-2" }, /* @__PURE__ */ React.createElement(StatusBadge, { status: e.status })));
+  }), lista.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "py-8 px-4 text-center text-gray-400" }, "Nenhuma emiss\xE3o pra mostrar."))))), sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo, souAprovador: aprovador })))));
 }
 function Dashboard() {
   const [usuario, setUsuario] = useState(loadSessao());
