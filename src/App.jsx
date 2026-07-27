@@ -521,6 +521,12 @@ function fileToResizedBase64(file, maxDim = 1280, quality = 0.72) {
 }
 
 // ─── GPS → cidade ─────────────────────────────────────────────────────────────
+// Última posição GPS conhecida (lat/lon) — usada só como PISTA de proximidade
+// na busca de cidades (não limita, só prioriza o que está perto de onde você
+// está agora). Fallback: região onde a BTJ opera (Ilha Solteira/Sud Mennucci).
+let _ultimaPosicao_ = null;
+const _POSICAO_FALLBACK_ = { lat: -20.4297, lon: -51.3453 };
+
 function gpsCidade() {
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
@@ -528,6 +534,7 @@ function gpsCidade() {
       async (pos) => {
         try {
           const { latitude, longitude } = pos.coords;
+          _ultimaPosicao_ = { lat: latitude, lon: longitude };
           const res = await fetch(
             `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&accept-language=pt-BR`
           );
@@ -548,27 +555,54 @@ function gpsCidade() {
 // Busca cidades no Nominatim (mesmo serviço gratuito do GPS) conforme o
 // usuário digita. Uso responsável: só chama com 3+ caracteres, com debounce
 // (na LugarCombobox) e cache por texto — evita martelar o serviço gratuito.
+// Tipos de lugar que contam como "cidade/vila/povoado" de verdade — exclui
+// ruas, bairros, estabelecimentos e outros POIs que só "carregam" uma cidade
+// no endereço sem ser a cidade em si (foi isso que trouxe "Santaluz - BA"
+// antes de "Pereira Barreto - SP" ao digitar só "Pereira").
+const TIPOS_LUGAR_VALIDOS_ = new Set(["city", "town", "village", "municipality", "hamlet"]);
+
+function distanciaKm_(a, b) {
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
 const _nominatimCache_ = new Map();
+
 async function buscarCidadesNominatim_(query, signal) {
   const q = query.trim();
   if (q.length < 3) return [];
   const key = q.toLowerCase();
   if (_nominatimCache_.has(key)) return _nominatimCache_.get(key);
   try {
+    // Viés de proximidade (não restringe — só prioriza o que está perto de
+    // onde você está agora, ou da região onde a BTJ opera se o GPS não rodou).
+    const pos = _ultimaPosicao_ || _POSICAO_FALLBACK_;
+    const d = 3; // ~300km de raio de viés — mantém achável cidade longe se digitar certo
+    const viewbox = `${pos.lon - d},${pos.lat + d},${pos.lon + d},${pos.lat - d}`;
     const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&addressdetails=1&limit=5&countrycodes=br&accept-language=pt-BR`,
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}` +
+      `&format=json&addressdetails=1&limit=8&countrycodes=br&accept-language=pt-BR` +
+      `&featuretype=settlement&viewbox=${viewbox}&bounded=0`,
       { signal }
     );
     const data = await res.json();
-    const nomes = [];
+    const candidatos = [];
     for (const item of data) {
+      if (!TIPOS_LUGAR_VALIDOS_.has(item.type)) continue; // só lugar de verdade
       const a = item.address || {};
       const cidade = a.city || a.town || a.village || a.municipality;
       if (!cidade) continue;
       const uf = ufDoEndereco_(a);
       const label = uf ? `${cidade} - ${uf}` : cidade;
-      if (nomes.indexOf(label) === -1) nomes.push(label);
+      const lat = Number(item.lat), lon = Number(item.lon);
+      candidatos.push({ label, dist: (isFinite(lat) && isFinite(lon)) ? distanciaKm_(pos, { lat, lon }) : 99999 });
     }
+    candidatos.sort((x, y) => x.dist - y.dist); // mais perto de você primeiro
+    const nomes = [];
+    for (const c of candidatos) if (nomes.indexOf(c.label) === -1) nomes.push(c.label);
     _nominatimCache_.set(key, nomes);
     return nomes;
   } catch {
