@@ -2375,7 +2375,16 @@ export default function App() {
   }
 
   async function resyncUnsynced() {
-    const pending = loadRecords().filter(r => r.synced === false);
+    // Só reenvia registros válidos. Registros inválidos presos na fila
+    // (ex.: data nula que gerava o fantasma 31/12/1969) são descartados aqui,
+    // pra não ficarem batendo no backend a cada sincronização.
+    const todos = loadRecords();
+    const invalidos = todos.filter(r => r.synced === false && !registroValido_(r));
+    if (invalidos.length) {
+      const ids = new Set(invalidos.map(r => r.id));
+      mutateRecords(recs => recs.filter(r => !ids.has(r.id)));
+    }
+    const pending = loadRecords().filter(r => r.synced === false && registroValido_(r));
     for (const r of pending) {
       try {
         await apiSave(r, usuario.email);
@@ -2493,6 +2502,10 @@ export default function App() {
     }
     if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
       avisar("Preencha ao menos um KM, destino ou observação.");
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fData) || fData < "2020-01-01") {
+      avisar("A data do apontamento está ausente ou inválida. Selecione a data antes de salvar.");
       return;
     }
     const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro);
