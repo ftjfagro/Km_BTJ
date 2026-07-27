@@ -521,11 +521,9 @@ function fileToResizedBase64(file, maxDim = 1280, quality = 0.72) {
 }
 
 // ─── GPS → cidade ─────────────────────────────────────────────────────────────
-// Última posição GPS conhecida (lat/lon) — usada só como PISTA de proximidade
-// na busca de cidades (não limita, só prioriza o que está perto de onde você
-// está agora). Fallback: região onde a BTJ opera (Ilha Solteira/Sud Mennucci).
-let _ultimaPosicao_ = null;
-const _POSICAO_FALLBACK_ = { lat: -20.4297, lon: -51.3453 };
+// Última UF conhecida (do GPS) — usada só como critério de prioridade na
+// lista de cidades (não limita, só prioriza o seu estado atual).
+let _ultimaUF_ = null;
 
 function gpsCidade() {
   return new Promise((resolve) => {
@@ -534,7 +532,6 @@ function gpsCidade() {
       async (pos) => {
         try {
           const { latitude, longitude } = pos.coords;
-          _ultimaPosicao_ = { lat: latitude, lon: longitude };
           const res = await fetch(
             `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&accept-language=pt-BR`
           );
@@ -543,6 +540,7 @@ function gpsCidade() {
           const municipio = a.city || a.town || a.village || a.municipality || null;
           if (!municipio) return resolve(null);
           const uf = ufDoEndereco_(a);
+          if (uf) _ultimaUF_ = uf;
           resolve(uf ? `${municipio} - ${uf}` : municipio);
         } catch { resolve(null); }
       },
@@ -552,62 +550,64 @@ function gpsCidade() {
   });
 }
 
-// Busca cidades no Nominatim (mesmo serviço gratuito do GPS) conforme o
-// usuário digita. Uso responsável: só chama com 3+ caracteres, com debounce
-// (na LugarCombobox) e cache por texto — evita martelar o serviço gratuito.
-// Tipos de lugar que contam como "cidade/vila/povoado" de verdade — exclui
-// ruas, bairros, estabelecimentos e outros POIs que só "carregam" uma cidade
-// no endereço sem ser a cidade em si (foi isso que trouxe "Santaluz - BA"
-// antes de "Pereira Barreto - SP" ao digitar só "Pereira").
-const TIPOS_LUGAR_VALIDOS_ = new Set(["city", "town", "village", "municipality", "hamlet"]);
+// ─── Lista OFICIAL dos ~5.570 municípios brasileiros (IBGE) ───────────────────
+// Baixada 1x (dado público, atemporal — não é "busca ao vivo" por tecla) e
+// cacheada no aparelho. Toda a filtragem/ranking daqui pra frente é local,
+// instantânea, funciona offline e não depende de nenhum serviço de busca
+// (resolve de vez o problema de nome parcial não encontrar a cidade certa).
+const KEY_MUNICIPIOS_BR = "km_municipios_br_v1";
+const MUNICIPIOS_URL = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios";
 
-function distanciaKm_(a, b) {
-  const R = 6371;
-  const dLat = (b.lat - a.lat) * Math.PI / 180;
-  const dLon = (b.lon - a.lon) * Math.PI / 180;
-  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
+let _municipiosPromise_ = null;
+function carregarMunicipiosBR_() {
+  if (_municipiosPromise_) return _municipiosPromise_;
+  _municipiosPromise_ = (async () => {
+    try {
+      const cached = localStorage.getItem(KEY_MUNICIPIOS_BR);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && Array.isArray(parsed.lista) && parsed.lista.length > 5000) return parsed.lista;
+      }
+    } catch { /* cache corrompido — busca de novo */ }
+    try {
+      const res = await fetch(MUNICIPIOS_URL);
+      const data = await res.json();
+      const lista = data.map(m => {
+        const uf =
+          (m.microrregiao?.mesorregiao?.UF?.sigla) ||
+          (m["regiao-imediata"]?.["regiao-intermediaria"]?.UF?.sigla) || "";
+        return { nome: m.nome, uf };
+      }).filter(m => m.nome && m.uf);
+      if (lista.length > 5000) {
+        try { localStorage.setItem(KEY_MUNICIPIOS_BR, JSON.stringify({ ts: Date.now(), lista })); } catch {}
+      }
+      return lista;
+    } catch {
+      return []; // offline no 1º uso — some sem sugestão de cidade nova até baixar
+    }
+  })();
+  return _municipiosPromise_;
 }
 
-const _nominatimCache_ = new Map();
-
-async function buscarCidadesNominatim_(query, signal) {
-  const q = query.trim();
-  if (q.length < 3) return [];
-  const key = q.toLowerCase();
-  if (_nominatimCache_.has(key)) return _nominatimCache_.get(key);
-  try {
-    // Viés de proximidade (não restringe — só prioriza o que está perto de
-    // onde você está agora, ou da região onde a BTJ opera se o GPS não rodou).
-    const pos = _ultimaPosicao_ || _POSICAO_FALLBACK_;
-    const d = 3; // ~300km de raio de viés — mantém achável cidade longe se digitar certo
-    const viewbox = `${pos.lon - d},${pos.lat + d},${pos.lon + d},${pos.lat - d}`;
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}` +
-      `&format=json&addressdetails=1&limit=8&countrycodes=br&accept-language=pt-BR` +
-      `&featuretype=settlement&viewbox=${viewbox}&bounded=0`,
-      { signal }
-    );
-    const data = await res.json();
-    const candidatos = [];
-    for (const item of data) {
-      if (!TIPOS_LUGAR_VALIDOS_.has(item.type)) continue; // só lugar de verdade
-      const a = item.address || {};
-      const cidade = a.city || a.town || a.village || a.municipality;
-      if (!cidade) continue;
-      const uf = ufDoEndereco_(a);
-      const label = uf ? `${cidade} - ${uf}` : cidade;
-      const lat = Number(item.lat), lon = Number(item.lon);
-      candidatos.push({ label, dist: (isFinite(lat) && isFinite(lon)) ? distanciaKm_(pos, { lat, lon }) : 99999 });
-    }
-    candidatos.sort((x, y) => x.dist - y.dist); // mais perto de você primeiro
-    const nomes = [];
-    for (const c of candidatos) if (nomes.indexOf(c.label) === -1) nomes.push(c.label);
-    _nominatimCache_.set(key, nomes);
-    return nomes;
-  } catch {
-    return []; // offline ou abortado — sem sugestão remota, o app segue livre
+// Filtra + ordena: prefixo pesa mais que "contém no meio"; mesmo estado de
+// onde você está agora pesa mais que outro estado (resolve "Pereira" achar
+// Pereira Barreto-SP antes de Chapecó-SC/Iaçu-BA, sem precisar de coordenada).
+function buscarCidadesBR_(lista, query) {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  const pontuados = [];
+  for (const m of lista) {
+    const nomeLower = m.nome.toLowerCase();
+    const idx = nomeLower.indexOf(q);
+    if (idx === -1) continue;
+    let score = idx === 0 ? 100 : 10; // começa com > só contém
+    if (_ultimaUF_ && m.uf === _ultimaUF_) score += 50; // seu estado atual
+    pontuados.push({ label: `${m.nome} - ${m.uf}`, score, nomeLower });
   }
+  pontuados.sort((a, b) => b.score - a.score || a.nomeLower.localeCompare(b.nomeLower));
+  const nomes = [];
+  for (const p of pontuados) { if (nomes.indexOf(p.label) === -1) nomes.push(p.label); if (nomes.length >= 8) break; }
+  return nomes;
 }
 
 // ─── Campo de local com sugestões (unidades do grupo + histórico + busca ao
@@ -616,28 +616,22 @@ async function buscarCidadesNominatim_(query, signal) {
 function LugarCombobox({ value, onChange, unidades, recentes, placeholder, hint }) {
   const [aberto, setAberto] = useState(false);
   const [remotas, setRemotas] = useState([]);
-  const [buscando, setBuscando] = useState(false);
-  const timerRef = useRef(null);
-  const abortRef = useRef(null);
+  const [municipios, setMunicipios] = useState(null); // null = ainda carregando
   const boxRef = useRef(null);
 
+  // Carrega a lista oficial de municípios 1x (cache local do IBGE) assim que
+  // o campo é usado pela primeira vez — depois disso é tudo instantâneo.
   useEffect(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (abortRef.current) abortRef.current.abort();
-    const q = value.trim();
-    if (q.length < 3) { setRemotas([]); setBuscando(false); return; }
-    setBuscando(true);
-    timerRef.current = setTimeout(() => {
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      buscarCidadesNominatim_(q, ctrl.signal).then(nomes => {
-        setRemotas(nomes);
-        setBuscando(false);
-      });
-    }, 600); // debounce — não busca a cada tecla
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+    let alive = true;
+    carregarMunicipiosBR_().then(lista => { if (alive) setMunicipios(lista); });
+    return () => { alive = false; };
+  }, []);
+
+  // Filtragem local — instantânea, sem chamada de rede por tecla.
+  useEffect(() => {
+    if (!municipios || !municipios.length) { setRemotas([]); return; }
+    setRemotas(buscarCidadesBR_(municipios, value));
+  }, [value, municipios]);
 
   useEffect(() => {
     function onDocClick(e) { if (boxRef.current && !boxRef.current.contains(e.target)) setAberto(false); }
@@ -650,6 +644,7 @@ function LugarCombobox({ value, onChange, unidades, recentes, placeholder, hint 
   const matchRecentes = (recentes || []).filter(r => (!q || r.toLowerCase().indexOf(q) !== -1) && matchUnidades.indexOf(r) === -1);
   const matchRemotas = remotas.filter(r => matchUnidades.indexOf(r) === -1 && matchRecentes.indexOf(r) === -1);
   const temSugestao = matchUnidades.length || matchRecentes.length || matchRemotas.length;
+  const buscando = municipios === null && q.length >= 2; // ainda baixando a lista na 1ª vez
 
   function escolher(v) { onChange(v); setAberto(false); }
 
@@ -685,7 +680,7 @@ function LugarCombobox({ value, onChange, unidades, recentes, placeholder, hint 
             </button>
           ))}
           {buscando && (
-            <div className="px-3 py-2 text-xs text-gray-400 italic">buscando no mapa...</div>
+            <div className="px-3 py-2 text-xs text-gray-400 italic">carregando lista de cidades (só na 1ª vez)...</div>
           )}
         </div>
       )}
