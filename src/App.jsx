@@ -26,16 +26,22 @@ const DEFAULT_CONFIG = {
 };
 const CARRO_PADRAO = "Corolla FSZ8B48";
 
-// GPS: município oficial → apelido usado na planilha
-const CITY_GPS_MAP = {
-  "Sud Mennucci": "Sud",
-  "Ilha Solteira": "Ilha",
-  "Ribeirão Preto": "RP",
-  "São Paulo": "SP",
-  "Campinas": "Campinas",
-  "Jundiaí": "Jundiaí",
-  "Presidente Prudente": "Prudente",
+// Nome completo do estado → UF (dado fixo do Brasil, não é apelido de lugar).
+const UF_POR_ESTADO = {
+  "acre": "AC", "alagoas": "AL", "amapá": "AP", "amazonas": "AM", "bahia": "BA",
+  "ceará": "CE", "distrito federal": "DF", "espírito santo": "ES", "goiás": "GO",
+  "maranhão": "MA", "mato grosso": "MT", "mato grosso do sul": "MS", "minas gerais": "MG",
+  "pará": "PA", "paraíba": "PB", "paraná": "PR", "pernambuco": "PE", "piauí": "PI",
+  "rio de janeiro": "RJ", "rio grande do norte": "RN", "rio grande do sul": "RS",
+  "rondônia": "RO", "roraima": "RR", "santa catarina": "SC", "são paulo": "SP",
+  "sergipe": "SE", "tocantins": "TO",
 };
+function ufDoEndereco_(address) {
+  const iso = address && address["ISO3166-2-lvl4"]; // ex: "BR-SP"
+  if (iso && iso.indexOf("-") !== -1) return iso.split("-")[1];
+  const estado = String((address && address.state) || "").trim().toLowerCase();
+  return UF_POR_ESTADO[estado] || "";
+}
 
 const WEEKDAYS_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 const WEEKDAYS_ABREV_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -523,19 +529,135 @@ function gpsCidade() {
         try {
           const { latitude, longitude } = pos.coords;
           const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&accept-language=pt-BR`
+            `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&accept-language=pt-BR`
           );
           const data = await res.json();
           const a = data.address || {};
           const municipio = a.city || a.town || a.village || a.municipality || null;
           if (!municipio) return resolve(null);
-          resolve(CITY_GPS_MAP[municipio] || municipio);
+          const uf = ufDoEndereco_(a);
+          resolve(uf ? `${municipio} - ${uf}` : municipio);
         } catch { resolve(null); }
       },
       () => resolve(null),
       { timeout: 8000, maximumAge: 300000 }
     );
   });
+}
+
+// Busca cidades no Nominatim (mesmo serviço gratuito do GPS) conforme o
+// usuário digita. Uso responsável: só chama com 3+ caracteres, com debounce
+// (na LugarCombobox) e cache por texto — evita martelar o serviço gratuito.
+const _nominatimCache_ = new Map();
+async function buscarCidadesNominatim_(query, signal) {
+  const q = query.trim();
+  if (q.length < 3) return [];
+  const key = q.toLowerCase();
+  if (_nominatimCache_.has(key)) return _nominatimCache_.get(key);
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&addressdetails=1&limit=5&countrycodes=br&accept-language=pt-BR`,
+      { signal }
+    );
+    const data = await res.json();
+    const nomes = [];
+    for (const item of data) {
+      const a = item.address || {};
+      const cidade = a.city || a.town || a.village || a.municipality;
+      if (!cidade) continue;
+      const uf = ufDoEndereco_(a);
+      const label = uf ? `${cidade} - ${uf}` : cidade;
+      if (nomes.indexOf(label) === -1) nomes.push(label);
+    }
+    _nominatimCache_.set(key, nomes);
+    return nomes;
+  } catch {
+    return []; // offline ou abortado — sem sugestão remota, o app segue livre
+  }
+}
+
+// ─── Campo de local com sugestões (unidades do grupo + histórico + busca ao
+// vivo no mapa) — NUNCA bloqueia: sempre dá pra digitar e salvar qualquer coisa,
+// as sugestões só aceleram o caso comum. ──────────────────────────────────────
+function LugarCombobox({ value, onChange, unidades, recentes, placeholder, hint }) {
+  const [aberto, setAberto] = useState(false);
+  const [remotas, setRemotas] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const timerRef = useRef(null);
+  const abortRef = useRef(null);
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (abortRef.current) abortRef.current.abort();
+    const q = value.trim();
+    if (q.length < 3) { setRemotas([]); setBuscando(false); return; }
+    setBuscando(true);
+    timerRef.current = setTimeout(() => {
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      buscarCidadesNominatim_(q, ctrl.signal).then(nomes => {
+        setRemotas(nomes);
+        setBuscando(false);
+      });
+    }, 600); // debounce — não busca a cada tecla
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useEffect(() => {
+    function onDocClick(e) { if (boxRef.current && !boxRef.current.contains(e.target)) setAberto(false); }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const q = value.trim().toLowerCase();
+  const matchUnidades = (unidades || []).filter(u => !q || u.toLowerCase().indexOf(q) !== -1);
+  const matchRecentes = (recentes || []).filter(r => (!q || r.toLowerCase().indexOf(q) !== -1) && matchUnidades.indexOf(r) === -1);
+  const matchRemotas = remotas.filter(r => matchUnidades.indexOf(r) === -1 && matchRecentes.indexOf(r) === -1);
+  const temSugestao = matchUnidades.length || matchRecentes.length || matchRemotas.length;
+
+  function escolher(v) { onChange(v); setAberto(false); }
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <input
+        type="text"
+        value={value}
+        onChange={e => { onChange(e.target.value); setAberto(true); }}
+        onFocus={() => setAberto(true)}
+        onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur(); setAberto(false); } }}
+        placeholder={placeholder}
+        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
+      />
+      {aberto && (temSugestao || buscando) && (
+        <div className="absolute left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-100 overflow-hidden z-30 max-h-56 overflow-y-auto">
+          {matchUnidades.map(u => (
+            <button key={"u-" + u} onClick={() => escolher(u)} type="button"
+              className="w-full text-left px-3 py-2 text-sm border-b border-gray-50 flex items-center gap-1.5">
+              <span className="text-[10px]" style={{ color: BTJ_BLUE }}>●</span> {u}
+            </button>
+          ))}
+          {matchRecentes.map(r => (
+            <button key={"r-" + r} onClick={() => escolher(r)} type="button"
+              className="w-full text-left px-3 py-2 text-sm border-b border-gray-50 flex items-center gap-1.5 text-gray-700">
+              <span className="text-[10px] text-gray-300">↺</span> {r}
+            </button>
+          ))}
+          {matchRemotas.map(r => (
+            <button key={"g-" + r} onClick={() => escolher(r)} type="button"
+              className="w-full text-left px-3 py-2 text-sm border-b border-gray-50 flex items-center gap-1.5 text-gray-500">
+              <span className="text-[10px] text-gray-300">🌐</span> {r}
+            </button>
+          ))}
+          {buscando && (
+            <div className="px-3 py-2 text-xs text-gray-400 italic">buscando no mapa...</div>
+          )}
+        </div>
+      )}
+      {hint}
+    </div>
+  );
 }
 
 // ─── Export Excel (formato corporativo preservado) ────────────────────────────
@@ -2551,6 +2673,22 @@ export default function App() {
   const groupKeys = agrupamento === "mes" ? monthKeys : weekKeys;
   const curGroupKey = agrupamento === "mes" ? periodKey(todayISO()) : weekKey(todayISO());
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
+  // Últimos lugares usados (mais recente primeiro), sem duplicar as unidades do grupo.
+  const recentesLugares = useMemo(() => {
+    const vistos = new Set(destinos.map(d => d.toLowerCase()));
+    const out = [];
+    for (const r of [...records].sort((a, b) => b.data.localeCompare(a.data))) {
+      for (const v of [r.destino, r.origem]) {
+        const t = (v || "").trim();
+        if (!t || vistos.has(t.toLowerCase())) continue;
+        vistos.add(t.toLowerCase());
+        out.push(t);
+        if (out.length >= 6) break;
+      }
+      if (out.length >= 6) break;
+    }
+    return out;
+  }, [records, destinos]);
 
 
 
@@ -2797,27 +2935,25 @@ export default function App() {
                   <p className="text-[11px] text-gray-500 mb-0.5">
                     Saída {fOrigemGps && <span style={{ color: BTJ_BLUE }}>· via GPS</span>}
                   </p>
-                  <input
-                    type="text"
+                  <LugarCombobox
                     value={fOrigem}
-                    onChange={e => { setFOrigem(e.target.value); setFOrigemGps(false); }}
-                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                    onChange={v => { setFOrigem(v); setFOrigemGps(false); }}
+                    unidades={destinos}
+                    recentes={recentesLugares}
                     placeholder="detectando..."
-                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
                   />
                 </div>
               </div>
 
               <div className="mb-2.5">
                 <p className="text-[11px] text-gray-500 mb-0.5">Destino (opcional)</p>
-                <select
+                <LugarCombobox
                   value={fDestino}
-                  onChange={e => setFDestino(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white"
-                >
-                  <option value="">— selecionar —</option>
-                  {destinos.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+                  onChange={setFDestino}
+                  unidades={destinos}
+                  recentes={recentesLugares}
+                  placeholder="Ex: BTJ Foods, Barretos - SP..."
+                />
               </div>
 
               <div className="flex gap-2 mb-2.5">
