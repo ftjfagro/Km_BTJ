@@ -42,6 +42,12 @@ function weekdayAbrev(iso) {
 function iniciais(nome) {
   return String(nome || "").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 }
+function fimPeriodo(periodoKey) {
+  const [y, m] = String(periodoKey).split("-").map(Number);
+  const fim = new Date(y, m - 1, 25, 23, 59, 59);
+  const dd = String(fim.getDate()).padStart(2, "0") + "/" + String(fim.getMonth() + 1).padStart(2, "0");
+  return { label: (fim < /* @__PURE__ */ new Date() ? "encerrado " : "encerra ") + dd, passado: fim < /* @__PURE__ */ new Date() };
+}
 function weekKey(iso) {
   const d = parseISO(iso);
   d.setDate(d.getDate() - d.getDay());
@@ -592,7 +598,7 @@ function Painel({ usuario, onSair }) {
       if (!map[chave]) map[chave] = {
         chave,
         titulo: agrupar === "periodo" ? e.periodoLabel : e.nomeColaborador,
-        sub: agrupar === "periodo" ? e.periodoFim ? "encerra " + e.periodoFim : "" : "",
+        sub: agrupar === "periodo" ? fimPeriodo(e.periodo).label : "",
         itens: [],
         total: 0,
         atrasados: 0,
