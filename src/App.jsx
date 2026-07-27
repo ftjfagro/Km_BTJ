@@ -1287,13 +1287,13 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
 
 // ─── Tela: Gestão de Despesas (Pedágios ou Outras) ───────────────────────────
 function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, onAdd, addLabel }) {
-  // Agrupa por período 26→25, últimos 3
+  // Agrupa por período 26→25, últimos 4
   const byPeriod = {};
   despesas.forEach(d => {
     const k = periodKey(d.data);
     (byPeriod[k] = byPeriod[k] || []).push(d);
   });
-  const keys = Object.keys(byPeriod).sort().reverse().slice(0, 3);
+  const keys = Object.keys(byPeriod).sort().reverse().slice(0, 4);
 
   const [expanded, setExpanded] = useState(keys[0] || null);
   const [edit, setEdit] = useState(null); // { id, valor, descricao, data }
@@ -1408,7 +1408,7 @@ function GestaoPedagios({ despesas, records, travado, onChange, onAdd }) {
     const k = periodKey(d.data);
     (byPeriod[k] = byPeriod[k] || []).push(d);
   });
-  const periodos = Object.keys(byPeriod).sort().reverse().slice(0, 3);
+  const periodos = Object.keys(byPeriod).sort().reverse().slice(0, 4);
 
   const [expandedPeriod, setExpandedPeriod] = useState(periodos[0] || null);
   const [edit, setEdit] = useState(null);
@@ -2533,7 +2533,7 @@ export default function App() {
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
-  const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 3);
+  const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 4);
   const weekKeys = [...new Set(records.map(r => weekKey(r.data)))].sort().reverse();
   const groupKeys = agrupamento === "mes" ? monthKeys : weekKeys;
   const curGroupKey = agrupamento === "mes" ? periodKey(todayISO()) : weekKey(todayISO());
