@@ -170,6 +170,7 @@ function AssinaturaBox({ salva, onChange }) {
   const [temTra\u00E7o, setTemTra\u00E7o] = useState(false);
   const [desenhando, setDesenhando] = useState(false);
   const [usarSalva, setUsarSalva] = useState(!!salva);
+  const [copiado, setCopiado] = useState(false);
   function pos(e, canvas) {
     const rect = canvas.getBoundingClientRect();
     const t = e.touches && e.touches[0];
@@ -257,6 +258,14 @@ function AssinaturaBox({ salva, onChange }) {
   useEffect(() => {
     if (usarSalva && salva) onChange(salva);
   }, [usarSalva]);
+  function copiarBase64() {
+    const valor = usarSalva ? salva : canvasRef.current ? canvasRef.current.toDataURL("image/png") : "";
+    if (!valor) return;
+    navigator.clipboard.writeText(valor).then(() => {
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2e3);
+    });
+  }
   return /* @__PURE__ */ React.createElement("div", null, salva && /* @__PURE__ */ React.createElement("label", { className: "flex items-center gap-2 text-xs text-gray-600 mb-2" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: usarSalva, onChange: (e) => setUsarSalva(e.target.checked) }), " Usar minha assinatura salva"), !usarSalva ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
     "canvas",
     {
@@ -275,7 +284,7 @@ function AssinaturaBox({ salva, onChange }) {
       className: "border border-gray-300 rounded-lg bg-white touch-none",
       style: { cursor: "crosshair" }
     }
-  ), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mt-1.5" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: limpar, className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500" }, "Limpar"), /* @__PURE__ */ React.createElement("label", { className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500 cursor-pointer" }, "Enviar imagem", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "image/*", onChange: upload, className: "hidden" })), /* @__PURE__ */ React.createElement("span", { className: "text-[10px] text-gray-400" }, "desenhe com o mouse/dedo ou envie um arquivo"))) : /* @__PURE__ */ React.createElement("img", { src: salva, alt: "assinatura salva", className: "border border-gray-200 rounded-lg bg-white h-[110px]" }));
+  ), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mt-1.5 flex-wrap" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: limpar, className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500" }, "Limpar"), /* @__PURE__ */ React.createElement("label", { className: "text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-500 cursor-pointer" }, "Enviar imagem", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "image/*", onChange: upload, className: "hidden" })), /* @__PURE__ */ React.createElement("span", { className: "text-[10px] text-gray-400" }, "desenhe com o mouse/dedo ou envie um arquivo"), temTra\u00E7o && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: copiarBase64, className: "text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500 ml-auto" }, copiado ? "\u2713 copiado!" : "\u{1F4CB} copiar base64 (debug)"))) : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("img", { src: salva, alt: "assinatura salva", className: "border border-gray-200 rounded-lg bg-white h-[110px]" }), /* @__PURE__ */ React.createElement("div", { className: "mt-1.5" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: copiarBase64, className: "text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500" }, copiado ? "\u2713 copiado!" : "\u{1F4CB} copiar base64 (debug)"))));
 }
 function Comprovante({ img, link }) {
   const [erro, setErro] = useState(false);
