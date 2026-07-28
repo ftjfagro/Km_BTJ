@@ -218,9 +218,23 @@ function AssinaturaBox({ salva, onChange }) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      setUsarSalva(false);
-      setTemTra\u00E7o(true);
-      onChange(reader.result);
+      const img = new Image();
+      img.onload = () => {
+        const cv = document.createElement("canvas");
+        cv.width = 320;
+        cv.height = 110;
+        const ctx = cv.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        const escala = Math.min(cv.width / img.width, cv.height / img.height, 1);
+        const w = img.width * escala, h = img.height * escala;
+        ctx.drawImage(img, (cv.width - w) / 2, (cv.height - h) / 2, w, h);
+        const dataUrl = cv.toDataURL("image/jpeg", 0.8);
+        setUsarSalva(false);
+        setTemTra\u00E7o(true);
+        onChange(dataUrl);
+      };
+      img.src = reader.result;
     };
     reader.readAsDataURL(file);
   }
