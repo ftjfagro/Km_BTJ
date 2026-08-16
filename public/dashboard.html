@@ -933,82 +933,126 @@ function DespesasView({ usuario, souAprovador, colaboradores, periodos }) {
     })));
   })()));
 }
-function LinhaRelatorio({ e, mostrar, ativo, onClick }) {
-  const atrasado = e.status === "atrasado";
-  const bg = ativo ? "#E6F1FB" : atrasado ? "#FAEEDA" : "transparent";
+const MES_ABREV = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+function periodoCurto(p) {
+  const [y, m] = String(p).split("-").map(Number);
+  const s = MES_ABREV[m - 1] || "?";
+  return s.charAt(0).toUpperCase() + s.slice(1) + "/" + String(y).slice(2);
+}
+const anoDe = (p) => String(p).slice(0, 4);
+function familiaStatus(status, ehMeu) {
+  const s = String(status || "");
+  if (s === "conclu\xEDdo" || s === "enviado" || s === "reemitido") return "ok";
+  if (s === "em curso") return "curso";
+  if (ehMeu) {
+    if (s === "atrasado" || s === "em revis\xE3o" || s === "reaberto") return "acao";
+    return "esperando";
+  }
+  if (s === "aguardando aprova\xE7\xE3o" || s === "reenviado") return "acao";
+  return "esperando";
+}
+const FAM_STYLE = {
+  acao: { bg: "#FCEBEB", fg: "#791F1F", label: "precisa de voc\xEA" },
+  esperando: { bg: "#FAEEDA", fg: "#854F0B", label: "aguardando" },
+  ok: { bg: "#E1F5EE", fg: "#085041", label: "conclu\xEDdo" },
+  curso: { bg: "#F1EFE8", fg: "#5F5E5A", label: "em curso" }
+};
+function verboAcao(status, ehMeu) {
+  if (ehMeu) {
+    if (status === "atrasado") return "Enviar";
+    if (status === "em revis\xE3o") return "Corrigir";
+    return "Abrir";
+  }
+  return "Revisar";
+}
+function LinhaRelatorio({ e, mostrarNome, ativo, onClick, ehMeu }) {
+  const fam = familiaStatus(e.status, ehMeu);
+  const fs = FAM_STYLE[fam];
   return /* @__PURE__ */ React.createElement(
     "div",
     {
       onClick,
       className: "grid items-center gap-2 px-4 py-2 cursor-pointer text-xs",
-      style: { gridTemplateColumns: "minmax(0,1fr) 84px 96px 104px", background: bg, borderBottom: "1px solid #F1EFE8" }
+      style: { gridTemplateColumns: "minmax(0,1fr) 92px 120px", background: ativo ? "#E6F1FB" : "transparent", borderBottom: "1px solid #F1EFE8" }
     },
-    /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 min-w-0" }, mostrar !== "periodo" && /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(e.nomeColaborador)), /* @__PURE__ */ React.createElement("span", { className: "truncate" }, mostrar === "periodo" ? e.periodoLabel : e.nomeColaborador, mostrar === "ambos" ? /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, " \xB7 ", e.periodoLabel) : null)),
-    /* @__PURE__ */ React.createElement("div", { className: "text-right tabular-nums text-gray-500" }, kmFmt(e.km), " km"),
+    /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 min-w-0" }, mostrarNome && /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0", style: { background: "#E6F1FB", color: "#0C447C" } }, iniciais(e.nomeColaborador)), /* @__PURE__ */ React.createElement("span", { className: "truncate" }, mostrarNome ? String(e.nomeColaborador).split(" ").slice(0, 2).join(" ") : periodoCurto(e.periodo), mostrarNome ? /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, " \xB7 ", periodoCurto(e.periodo)) : null)),
     /* @__PURE__ */ React.createElement("div", { className: "text-right tabular-nums font-medium" }, brl(e.total)),
-    /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement(StatusBadge, { status: e.status, rodada: e.rodada }))
+    /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap", style: { background: fs.bg, color: fs.fg } }, fs.label), /* @__PURE__ */ React.createElement("div", { className: "text-[10px] text-gray-400 mt-0.5 truncate" }, e.status, e.rodada > 1 ? ` (${ORD[e.rodada] || e.rodada + "\xAA"})` : ""))
   );
 }
 function Painel({ usuario, onSair }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
-  const [fPeriodo, setFPeriodo] = useState("");
+  const [aba, setAba] = useState("meus");
   const [fColab, setFColab] = useState("");
-  const [fStatus, setFStatus] = useState("");
+  const [fFamilia, setFFamilia] = useState("");
   const [sel, setSel] = useState(null);
-  const [agrupar, setAgrupar] = useState("periodo");
   const [importando, setImportando] = useState(false);
   const [abaLateral, setAbaLateral] = useState("relatorios");
-  const [gruposFechados, setGruposFechados] = useState({});
+  const [anosFechados, setAnosFechados] = useState({});
   function carregarLista(manterSel) {
     setCarregando(true);
     setErro("");
     apiListarRelatorios(usuario.email).then((d) => {
       setDados(d);
-      if (!manterSel && d.relatorios.length) setSel({ colaborador: d.relatorios[0].colaborador, periodo: d.relatorios[0].periodo });
+      if (!manterSel) setSel(null);
     }).catch((e) => setErro(e.message)).finally(() => setCarregando(false));
   }
   useEffect(() => {
     carregarLista(false);
   }, []);
   const aprovador = dados ? dados.aprovador : false;
+  const meuEmail = String(usuario.email || "").toLowerCase();
+  const ehMeuRel = (e) => String(e.colaborador || "").toLowerCase() === meuEmail;
+  const relatorios = dados ? dados.relatorios : [];
+  const dosOutros = useMemo(() => relatorios.filter((e) => !ehMeuRel(e)), [relatorios]);
+  const temAprovacoes = dosOutros.length > 0;
+  const abaEfetiva = temAprovacoes ? aba : "meus";
+  const ehMeu = abaEfetiva === "meus";
+  const pendentesAprov = useMemo(() => dosOutros.filter((e) => familiaStatus(e.status, false) === "acao").length, [dosOutros]);
+  const base = ehMeu ? relatorios.filter(ehMeuRel) : dosOutros;
   const lista = useMemo(() => {
-    if (!dados) return [];
-    return dados.relatorios.filter((e) => (!fPeriodo || e.periodo === fPeriodo) && (!fColab || e.colaborador === fColab) && (!fStatus || e.status === fStatus));
-  }, [dados, fPeriodo, fColab, fStatus]);
-  const grupos = useMemo(() => {
-    if (agrupar === "lista") return [];
+    return base.filter((e) => (!fColab || e.colaborador === fColab) && (!fFamilia || familiaStatus(e.status, ehMeu) === fFamilia));
+  }, [base, fColab, fFamilia, ehMeu]);
+  const precisaDeVoce = useMemo(() => lista.filter((e) => familiaStatus(e.status, ehMeu) === "acao").sort((a, b) => a.periodo < b.periodo ? -1 : 1), [lista, ehMeu]);
+  const anos = useMemo(() => {
     const map = {};
     lista.forEach((e) => {
-      const chave = agrupar === "periodo" ? e.periodo : e.colaborador;
-      if (!map[chave]) map[chave] = {
-        chave,
-        titulo: agrupar === "periodo" ? e.periodoLabel : e.nomeColaborador,
-        sub: agrupar === "periodo" ? fimPeriodo(e.periodo).label : "",
-        itens: [],
-        total: 0,
-        atrasados: 0,
-        emRevisao: 0
-      };
-      const g = map[chave];
+      const ano = anoDe(e.periodo);
+      if (!map[ano]) map[ano] = { ano, itens: [], total: 0, acoes: 0 };
+      const g = map[ano];
       g.itens.push(e);
       g.total += e.total || 0;
-      if (e.status === "atrasado") g.atrasados++;
-      if (e.status === "em revis\xE3o" || e.status === "reenviado" || e.status === "aguardando aprova\xE7\xE3o") g.emRevisao++;
+      if (familiaStatus(e.status, ehMeu) === "acao") g.acoes++;
     });
     const arr = Object.values(map);
-    arr.forEach((g) => g.itens.sort((a, b) => agrupar === "periodo" ? a.nomeColaborador < b.nomeColaborador ? -1 : 1 : a.periodo < b.periodo ? 1 : -1));
-    arr.sort((a, b) => agrupar === "periodo" ? a.chave < b.chave ? 1 : -1 : a.titulo < b.titulo ? -1 : 1);
+    arr.forEach((g) => g.itens.sort((a, b) => a.periodo < b.periodo ? 1 : a.periodo > b.periodo ? -1 : String(a.nomeColaborador) < String(b.nomeColaborador) ? -1 : 1));
+    arr.sort((a, b) => a.ano < b.ano ? 1 : -1);
     return arr;
-  }, [lista, agrupar]);
+  }, [lista, ehMeu]);
+  const anoAtual = String((/* @__PURE__ */ new Date()).getFullYear());
+  const anoAberto = (g) => g.ano in anosFechados ? !anosFechados[g.ano] : g.acoes > 0 || g.ano === anoAtual;
   const selKey = sel ? `${sel.colaborador}|${sel.periodo}` : "";
+  function abrir(e) {
+    setSel({ colaborador: e.colaborador, periodo: e.periodo });
+    setTimeout(() => {
+      const el = document.getElementById("area-detalhe");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  }
+  const tabBtn = (v, rotulo, badge) => /* @__PURE__ */ React.createElement("button", { key: v, onClick: () => {
+    setAba(v);
+    setSel(null);
+    setFColab("");
+    setFFamilia("");
+  }, className: "px-3.5 py-2 text-sm font-medium flex items-center gap-2", style: abaEfetiva === v ? { color: "#0C447C", borderBottom: "2px solid " + BTJ_BLUE } : { color: "#6B7280", borderBottom: "2px solid transparent" } }, rotulo, badge > 0 ? /* @__PURE__ */ React.createElement("span", { className: "text-[11px] px-1.5 py-0.5 rounded-full", style: { background: "#FCEBEB", color: "#791F1F" } }, badge) : null);
   return /* @__PURE__ */ React.createElement("div", { className: "min-h-screen", style: { background: "#F4F6FA" } }, /* @__PURE__ */ React.createElement("div", { style: { background: BTJ_NAVY }, className: "text-white px-5 py-3" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white px-2 py-1 rounded-sm" }, /* @__PURE__ */ React.createElement("img", { src: logoUrl, alt: "BTJ", className: "h-5", onError: (e) => {
     e.target.outerHTML = '<span style="color:#001F3E;font-weight:700;letter-spacing:1px;">BTJ</span>';
-  } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-sm font-semibold leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, aprovador ? "aprovador \u2014 todas as emiss\xF5es" : "minhas emiss\xF5es"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-sm leading-tight" }, String(usuario.nome).split(" ").slice(0, 2).join(" ")), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, usuario.setor || "")), /* @__PURE__ */ React.createElement("button", { onClick: () => setImportando(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "+ Importar ped\xE1gio"), /* @__PURE__ */ React.createElement("button", { onClick: () => carregarLista(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u21BB Atualizar"), /* @__PURE__ */ React.createElement("button", { onClick: onSair, className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u238B Sair")))), /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex gap-4 px-4 py-4" }, /* @__PURE__ */ React.createElement("aside", { className: "w-56 shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-1" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("relatorios"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "relatorios" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4C4} Relat\xF3rios"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("despesas"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "despesas" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4B3} Despesas")), /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 uppercase tracking-wide mt-3 mb-1 px-1" }, "Filtros"), /* @__PURE__ */ React.createElement("select", { value: fPeriodo, onChange: (e) => setFPeriodo(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Per\xEDodo \xB7 todos"), dados && dados.filtros.periodos.map((p) => /* @__PURE__ */ React.createElement("option", { key: p, value: p }, periodLabelFromKey(p)))), aprovador && /* @__PURE__ */ React.createElement("select", { value: fColab, onChange: (e) => setFColab(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Colaborador \xB7 todos"), dados && dados.filtros.colaboradores.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.email, value: c.email }, String(c.nome).split(" ").slice(0, 2).join(" ")))), /* @__PURE__ */ React.createElement("select", { value: fStatus, onChange: (e) => setFStatus(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Status \xB7 todos"), ["em curso", "atrasado", "aguardando aprova\xE7\xE3o", "em revis\xE3o", "reenviado", "conclu\xEDdo"].map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }, s))))), /* @__PURE__ */ React.createElement("main", { className: "flex-1 min-w-0" }, abaLateral === "despesas" ? /* @__PURE__ */ React.createElement(DespesasView, { usuario, souAprovador: aprovador, colaboradores: dados ? dados.filtros.colaboradores : [], periodos: dados ? dados.filtros.periodos : [] }) : /* @__PURE__ */ React.createElement(React.Fragment, null, carregando && /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando relat\xF3rios\u2026"), erro && /* @__PURE__ */ React.createElement("div", { className: "p-4 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro), dados && !carregando && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2 flex items-center justify-between gap-2 flex-wrap border-b border-gray-100" }, /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-400" }, lista.length, " relat\xF3rio(s)"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-400" }, "Agrupar por"), [["periodo", "Per\xEDodo"], ["colaborador", "Colaborador"], ["lista", "Lista"]].map(([v, r]) => /* @__PURE__ */ React.createElement("button", { key: v, onClick: () => setAgrupar(v), className: "text-[11px] px-2 py-0.5 rounded-lg", style: agrupar === v ? { background: "#E6F1FB", color: "#0C447C", fontWeight: 500 } : { border: "1px solid #E7E5DE", color: "#6B7280" } }, r)))), lista.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "py-8 px-4 text-center text-gray-400 text-xs" }, "Nenhum relat\xF3rio pra mostrar."), lista.length > 0 && (agrupar === "lista" ? /* @__PURE__ */ React.createElement("div", null, lista.map((e) => /* @__PURE__ */ React.createElement(LinhaRelatorio, { key: `${e.colaborador}|${e.periodo}`, e, mostrar: "ambos", ativo: sel && sel.colaborador === e.colaborador && sel.periodo === e.periodo, onClick: () => setSel({ colaborador: e.colaborador, periodo: e.periodo }) }))) : grupos.map((gr) => {
-    const fechado = gr.chave in gruposFechados ? gruposFechados[gr.chave] : gr.atrasados === 0 && gr.emRevisao === 0;
-    return /* @__PURE__ */ React.createElement("div", { key: gr.chave }, /* @__PURE__ */ React.createElement("div", { onClick: () => setGruposFechados((p) => ({ ...p, [gr.chave]: !fechado })), className: "flex items-center justify-between gap-2 px-4 py-2 cursor-pointer select-none", style: { background: "#F4F6FA", borderBottom: "1px solid #EDEBE4" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-medium flex items-center gap-1.5", style: { color: BTJ_NAVY } }, /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, fechado ? "\u25B8" : "\u25BE"), gr.titulo, gr.sub ? /* @__PURE__ */ React.createElement("span", { className: "text-[11px] text-gray-400 font-normal" }, "\xB7 ", gr.sub) : null), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] tabular-nums", style: { color: gr.atrasados ? "#854F0B" : "#6B7280" } }, gr.atrasados ? `${gr.atrasados} atrasado${gr.atrasados > 1 ? "s" : ""} \xB7 ` : "", gr.itens.length, " \xB7 ", brl(gr.total))), !fechado && gr.itens.map((e) => /* @__PURE__ */ React.createElement(LinhaRelatorio, { key: `${e.colaborador}|${e.periodo}`, e, mostrar: agrupar === "periodo" ? "colaborador" : "periodo", ativo: sel && sel.colaborador === e.colaborador && sel.periodo === e.periodo, onClick: () => setSel({ colaborador: e.colaborador, periodo: e.periodo }) })));
-  }))), sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo, souAprovador: aprovador }))))), importando && /* @__PURE__ */ React.createElement(ImportarExtrato, { usuario, onFechar: () => setImportando(false), onSalvo: () => {
+  } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-sm font-semibold leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, temAprovacoes ? "relat\xF3rios e aprova\xE7\xF5es" : "meus relat\xF3rios"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-sm leading-tight" }, String(usuario.nome).split(" ").slice(0, 2).join(" ")), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, usuario.setor || "")), /* @__PURE__ */ React.createElement("button", { onClick: () => setImportando(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "+ Importar ped\xE1gio"), /* @__PURE__ */ React.createElement("button", { onClick: () => carregarLista(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u21BB Atualizar"), /* @__PURE__ */ React.createElement("button", { onClick: onSair, className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u238B Sair")))), /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex gap-4 px-4 py-4" }, /* @__PURE__ */ React.createElement("aside", { className: "w-52 shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-1" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("relatorios"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "relatorios" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4C4} Relat\xF3rios"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("despesas"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "despesas" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4B3} Despesas")), abaLateral === "relatorios" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 uppercase tracking-wide mt-3 mb-1 px-1" }, "Filtros"), /* @__PURE__ */ React.createElement("select", { value: fFamilia, onChange: (e) => setFFamilia(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Situa\xE7\xE3o \xB7 todas"), ["acao", "esperando", "curso", "ok"].map((f) => /* @__PURE__ */ React.createElement("option", { key: f, value: f }, FAM_STYLE[f].label))), !ehMeu && /* @__PURE__ */ React.createElement("select", { value: fColab, onChange: (e) => setFColab(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Pessoa \xB7 todas"), [...new Set(dosOutros.map((e) => e.colaborador))].map((em) => /* @__PURE__ */ React.createElement("option", { key: em, value: em }, String((dosOutros.find((x) => x.colaborador === em) || {}).nomeColaborador || em).split(" ").slice(0, 2).join(" "))))))), /* @__PURE__ */ React.createElement("main", { className: "flex-1 min-w-0" }, abaLateral === "despesas" ? /* @__PURE__ */ React.createElement(DespesasView, { usuario, souAprovador: aprovador, colaboradores: dados ? dados.filtros.colaboradores : [], periodos: dados ? dados.filtros.periodos : [] }) : /* @__PURE__ */ React.createElement(React.Fragment, null, carregando && /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando relat\xF3rios\u2026"), erro && /* @__PURE__ */ React.createElement("div", { className: "p-4 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro), dados && !carregando && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center px-2 border-b border-gray-100" }, tabBtn("meus", "Meus relat\xF3rios", 0), temAprovacoes && tabBtn("aprovacoes", "Aprova\xE7\xF5es", pendentesAprov)), precisaDeVoce.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { background: "#FEF3E2", borderBottom: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("p", { className: "text-[11px] font-medium mb-2", style: { color: "#854F0B" } }, "Precisa de voc\xEA \xB7 ", precisaDeVoce.length), precisaDeVoce.slice(0, 3).map((e) => /* @__PURE__ */ React.createElement("div", { key: `${e.colaborador}|${e.periodo}`, className: "flex items-center justify-between gap-3 py-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs truncate", style: { color: "#412402" } }, !ehMeu ? String(e.nomeColaborador).split(" ").slice(0, 2).join(" ") + " \xB7 " : "", periodoCurto(e.periodo), " \xB7 ", kmFmt(e.km), " km \xB7 ", brl(e.total)), /* @__PURE__ */ React.createElement("button", { onClick: () => abrir(e), className: "text-[11px] px-3 py-1 rounded-lg font-medium shrink-0", style: { background: "#fff", border: "1px solid #E7C99A", color: "#854F0B" } }, verboAcao(e.status, ehMeu)))), precisaDeVoce.length > 3 && /* @__PURE__ */ React.createElement("p", { className: "text-[10px] mt-1", style: { color: "#854F0B" } }, "+ ", precisaDeVoce.length - 3, " abaixo na lista")), lista.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "py-8 px-4 text-center text-gray-400 text-xs" }, ehMeu ? "Nenhum relat\xF3rio seu por aqui." : "Nada aguardando sua aprova\xE7\xE3o."), anos.map((g) => {
+    const aberto = anoAberto(g);
+    return /* @__PURE__ */ React.createElement("div", { key: g.ano }, /* @__PURE__ */ React.createElement("div", { onClick: () => setAnosFechados((p) => ({ ...p, [g.ano]: aberto })), className: "flex items-center justify-between gap-2 px-4 py-2 cursor-pointer select-none", style: { background: "#F4F6FA", borderBottom: "1px solid #EDEBE4" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-medium flex items-center gap-1.5", style: { color: BTJ_NAVY } }, /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, aberto ? "\u25BE" : "\u25B8"), g.ano, g.acoes > 0 ? /* @__PURE__ */ React.createElement("span", { className: "text-[10px] px-1.5 py-0.5 rounded-full", style: { background: "#FCEBEB", color: "#791F1F" } }, g.acoes, " pendente", g.acoes > 1 ? "s" : "") : null), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] tabular-nums text-gray-500" }, g.itens.length, " \xB7 ", brl(g.total))), aberto && g.itens.map((e) => /* @__PURE__ */ React.createElement(LinhaRelatorio, { key: `${e.colaborador}|${e.periodo}`, e, mostrarNome: !ehMeu, ehMeu, ativo: sel && sel.colaborador === e.colaborador && sel.periodo === e.periodo, onClick: () => abrir(e) })));
+  })), /* @__PURE__ */ React.createElement("div", { id: "area-detalhe" }, sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo, souAprovador: aprovador })))))), importando && /* @__PURE__ */ React.createElement(ImportarExtrato, { usuario, onFechar: () => setImportando(false), onSalvo: () => {
   } }));
 }
 function Dashboard() {
