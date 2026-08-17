@@ -573,7 +573,7 @@ function SecaoPedagio({ usuario, colaborador, periodo }) {
     return /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1.5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 text-xs flex-wrap" }, l.url && /* @__PURE__ */ React.createElement("a", { href: l.url, target: "_blank", rel: "noreferrer", style: { color: BTJ_BLUE } }, l.importadoEm, " \xB7 ", l.fonte, " \xB7 ", l.nPassagens, " passagens \xB7 ", brl(l.total)), /* @__PURE__ */ React.createElement("button", { onClick: () => reconferir(l.id), disabled: rc && rc.busy, className: "text-[11px] px-2 py-0.5 rounded border border-gray-200 text-gray-500 disabled:opacity-60" }, rc && rc.busy ? "Reconferindo\u2026" : "Reconferir com IA")), rc && rc.resultado && /* @__PURE__ */ React.createElement("div", { className: "text-[11px] mt-1 rounded p-2", style: { background: rc.resultado.semDivergencia ? "#E1F5EE" : "#FAEEDA", color: rc.resultado.semDivergencia ? "#085041" : "#412402" } }, rc.resultado.semDivergencia ? "\u2713 Reconferido \u2014 bate com o arquivo original." : rc.resultado.parecer || `${rc.resultado.nDivergencias} diverg\xEAncia(s) encontrada(s).`), rc && rc.erro && /* @__PURE__ */ React.createElement("p", { className: "text-[11px] mt-1", style: { color: "#B3261E" } }, rc.erro));
   })));
 }
-function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
+function Detalhe({ usuario, colaborador, periodo, souAprovador, onAcaoConcluida }) {
   const [det, setDet] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -705,6 +705,7 @@ function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
       await apiDevolver(usuario.email, colaborador, periodo, itens);
       setAcaoMsg("\u2713 Devolvido para revis\xE3o.");
       await carregar(true);
+      if (onAcaoConcluida) onAcaoConcluida();
       setModoMarcacao(false);
     } catch (e) {
       setAcaoMsg("erro: " + e.message);
@@ -720,6 +721,7 @@ function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
       await apiConcluir(usuario.email, colaborador, periodo);
       setAcaoMsg("\u2713 Conclu\xEDdo.");
       await carregar(true);
+      if (onAcaoConcluida) onAcaoConcluida();
     } catch (e) {
       setAcaoMsg("erro: " + e.message);
     } finally {
@@ -738,6 +740,7 @@ function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
       await apiAprovarSubmissao(usuario.email, colaborador, periodo, assinaturaAprovadorAtual);
       setAcaoMsg("\u2713 Aprovado e emitido.");
       await carregar(true);
+      if (onAcaoConcluida) onAcaoConcluida();
     } catch (e) {
       setAcaoMsg("erro: " + e.message);
     } finally {
@@ -757,6 +760,7 @@ function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
       await apiReenviar(usuario.email, colaborador, periodo, itens);
       setAcaoMsg("\u2713 Reenviado para aprova\xE7\xE3o.");
       await carregar(true);
+      if (onAcaoConcluida) onAcaoConcluida();
     } catch (e) {
       setAcaoMsg("erro: " + e.message);
     } finally {
@@ -785,6 +789,7 @@ function Detalhe({ usuario, colaborador, periodo, souAprovador }) {
       await apiFecharRelatorio(usuario.email, colaborador, periodo, assinaturaAtual, salvarAssin);
       setAcaoMsg("\u2713 Enviado para aprova\xE7\xE3o.");
       await carregar(true);
+      if (onAcaoConcluida) onAcaoConcluida();
     } catch (e) {
       setAcaoMsg("erro: " + e.message);
     } finally {
@@ -997,13 +1002,15 @@ function Painel({ usuario, onSair }) {
   const [importando, setImportando] = useState(false);
   const [abaLateral, setAbaLateral] = useState("relatorios");
   const [anosFechados, setAnosFechados] = useState({});
-  function carregarLista(manterSel) {
-    setCarregando(true);
+  function carregarLista(manterSel, silencioso) {
+    if (!silencioso) setCarregando(true);
     setErro("");
     apiListarRelatorios(usuario.email).then((d) => {
       setDados(d);
       if (!manterSel) setSel(null);
-    }).catch((e) => setErro(e.message)).finally(() => setCarregando(false));
+    }).catch((e) => setErro(e.message)).finally(() => {
+      if (!silencioso) setCarregando(false);
+    });
   }
   useEffect(() => {
     carregarLista(false);
@@ -1058,7 +1065,7 @@ function Painel({ usuario, onSair }) {
   } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-sm font-semibold leading-tight" }, "Painel Km_BTJ"), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, temAprovacoes ? "relat\xF3rios e aprova\xE7\xF5es" : "meus relat\xF3rios"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("p", { className: "text-sm leading-tight" }, String(usuario.nome).split(" ").slice(0, 2).join(" ")), /* @__PURE__ */ React.createElement("p", { className: "text-[11px]", style: { color: BTJ_LIGHT } }, usuario.setor || "")), /* @__PURE__ */ React.createElement("button", { onClick: () => setImportando(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "+ Importar ped\xE1gio"), /* @__PURE__ */ React.createElement("button", { onClick: () => carregarLista(true), className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u21BB Atualizar"), /* @__PURE__ */ React.createElement("button", { onClick: onSair, className: "text-[11px] px-3 py-1.5 rounded-lg", style: { background: "rgba(255,255,255,0.12)", color: "#fff" } }, "\u238B Sair")))), /* @__PURE__ */ React.createElement("div", { className: "max-w-[1240px] mx-auto flex gap-4 px-4 py-4" }, /* @__PURE__ */ React.createElement("aside", { className: "w-52 shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-1" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("relatorios"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "relatorios" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4C4} Relat\xF3rios"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAbaLateral("despesas"), className: "flex-1 px-2 py-2 rounded-lg text-sm font-medium", style: abaLateral === "despesas" ? { background: "#E6F1FB", color: "#0C447C" } : { color: "#6B7280" } }, "\u{1F4B3} Despesas")), abaLateral === "relatorios" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { className: "text-[10px] text-gray-400 uppercase tracking-wide mt-3 mb-1 px-1" }, "Filtros"), /* @__PURE__ */ React.createElement("select", { value: fFamilia, onChange: (e) => setFFamilia(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2 bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Situa\xE7\xE3o \xB7 todas"), ["acao", "esperando", "curso", "ok"].map((f) => /* @__PURE__ */ React.createElement("option", { key: f, value: f }, FAM_STYLE[f].label))), !ehMeu && /* @__PURE__ */ React.createElement("select", { value: fColab, onChange: (e) => setFColab(e.target.value), className: "w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Pessoa \xB7 todas"), [...new Set(dosOutros.map((e) => e.colaborador))].map((em) => /* @__PURE__ */ React.createElement("option", { key: em, value: em }, String((dosOutros.find((x) => x.colaborador === em) || {}).nomeColaborador || em).split(" ").slice(0, 2).join(" "))))))), /* @__PURE__ */ React.createElement("main", { className: "flex-1 min-w-0" }, abaLateral === "despesas" ? /* @__PURE__ */ React.createElement(DespesasView, { usuario, souAprovador: aprovador, colaboradores: dados ? dados.filtros.colaboradores : [], periodos: dados ? dados.filtros.periodos : [] }) : /* @__PURE__ */ React.createElement(React.Fragment, null, carregando && /* @__PURE__ */ React.createElement("div", { className: "p-8 text-center text-sm text-gray-400" }, "Carregando relat\xF3rios\u2026"), erro && /* @__PURE__ */ React.createElement("div", { className: "p-4 text-sm", style: { color: "#C62A2F" } }, "\u26A0 ", erro), dados && !carregando && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center px-2 border-b border-gray-100" }, tabBtn("meus", "Meus relat\xF3rios", 0), temAprovacoes && tabBtn("aprovacoes", "Aprova\xE7\xF5es", pendentesAprov)), precisaDeVoce.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { background: "#FEF3E2", borderBottom: "1px solid #F1EFE8" } }, /* @__PURE__ */ React.createElement("p", { className: "text-[11px] font-medium mb-2", style: { color: "#854F0B" } }, "Precisa de voc\xEA \xB7 ", precisaDeVoce.length), precisaDeVoce.slice(0, 3).map((e) => /* @__PURE__ */ React.createElement("div", { key: `${e.colaborador}|${e.periodo}`, className: "flex items-center justify-between gap-3 py-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs truncate", style: { color: "#412402" } }, !ehMeu ? String(e.nomeColaborador).split(" ").slice(0, 2).join(" ") + " \xB7 " : "", periodoCurto(e.periodo), " \xB7 ", kmFmt(e.km), " km \xB7 ", brl(e.total)), /* @__PURE__ */ React.createElement("button", { onClick: () => abrir(e), className: "text-[11px] px-3 py-1 rounded-lg font-medium shrink-0", style: { background: "#fff", border: "1px solid #E7C99A", color: "#854F0B" } }, verboAcao(e.status, ehMeu)))), precisaDeVoce.length > 3 && /* @__PURE__ */ React.createElement("p", { className: "text-[10px] mt-1", style: { color: "#854F0B" } }, "+ ", precisaDeVoce.length - 3, " abaixo na lista")), lista.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "py-8 px-4 text-center text-gray-400 text-xs" }, ehMeu ? "Nenhum relat\xF3rio seu por aqui." : "Nada aguardando sua aprova\xE7\xE3o."), anos.map((g) => {
     const aberto = anoAberto(g);
     return /* @__PURE__ */ React.createElement("div", { key: g.ano }, /* @__PURE__ */ React.createElement("div", { onClick: () => setAnosFechados((p) => ({ ...p, [g.ano]: aberto })), className: "flex items-center justify-between gap-2 px-4 py-2 cursor-pointer select-none", style: { background: "#F4F6FA", borderBottom: "1px solid #EDEBE4" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-medium flex items-center gap-1.5", style: { color: BTJ_NAVY } }, /* @__PURE__ */ React.createElement("span", { className: "text-gray-400" }, aberto ? "\u25BE" : "\u25B8"), g.ano, g.acoes > 0 ? /* @__PURE__ */ React.createElement("span", { className: "text-[10px] px-1.5 py-0.5 rounded-full", style: { background: "#FCEBEB", color: "#791F1F" } }, g.acoes, " pendente", g.acoes > 1 ? "s" : "") : null), /* @__PURE__ */ React.createElement("span", { className: "text-[11px] tabular-nums text-gray-500" }, g.itens.length, " \xB7 ", brl(g.total))), aberto && g.itens.map((e) => /* @__PURE__ */ React.createElement(LinhaRelatorio, { key: `${e.colaborador}|${e.periodo}`, e, mostrarNome: !ehMeu, ehMeu, ativo: sel && sel.colaborador === e.colaborador && sel.periodo === e.periodo, onClick: () => abrir(e) })));
-  })), /* @__PURE__ */ React.createElement("div", { id: "area-detalhe" }, sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo, souAprovador: aprovador })))))), importando && /* @__PURE__ */ React.createElement(ImportarExtrato, { usuario, onFechar: () => setImportando(false), onSalvo: () => {
+  })), /* @__PURE__ */ React.createElement("div", { id: "area-detalhe" }, sel && /* @__PURE__ */ React.createElement(Detalhe, { key: selKey, usuario, colaborador: sel.colaborador, periodo: sel.periodo, souAprovador: aprovador, onAcaoConcluida: () => carregarLista(true, true) })))))), importando && /* @__PURE__ */ React.createElement(ImportarExtrato, { usuario, onFechar: () => setImportando(false), onSalvo: () => {
   } }));
 }
 function Dashboard() {
