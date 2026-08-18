@@ -1946,6 +1946,61 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
   const [erro, setErro] = useState("");
   const arquivoRef = useRef(null);
 
+  // ── Status REAL do backend (mesma fonte que o dashboard do aprovador usa) ──
+  // Sem isso, o app só sabia "enviei/não enviei" (guardado no aparelho) — não
+  // enxergava "o aprovador devolveu pra revisão" nem "já foi aprovado de
+  // verdade" (com PDF/Excel prontos). Refeito pra sempre buscar o estado real.
+  const [det, setDet] = useState(null);
+  const [detLoading, setDetLoading] = useState(true);
+  const [detErro, setDetErro] = useState("");
+  const [respostasRevisao, setRespostasRevisao] = useState({});
+  const [reenviando, setReenviando] = useState(false);
+
+  function carregarDet() {
+    setDetLoading(true);
+    setDetErro("");
+    return apiDetalheRelatorio(usuario.email, usuario.email, periodo).then(d => {
+      setDet(d);
+      const r = {};
+      if (d.revisao && d.revisao.itens) d.revisao.itens.forEach(it => {
+        r[it.dia] = { corrigido: !!it.corrigido, justificativa: it.justificativa || "" };
+      });
+      setRespostasRevisao(r);
+      return d;
+    }).catch(e => {
+      setDetErro(e.message || "Sem conexão pra consultar o status atual.");
+      setDet(null);
+    }).finally(() => setDetLoading(false));
+  }
+  useEffect(() => { if (navigator.onLine) carregarDet(); else setDetLoading(false); }, [periodo]);
+
+  const statusReal = det ? det.status : null;
+  const emRevisaoReal = statusReal === "em revisão";
+  const aguardandoOuReenviado = statusReal === "aguardando aprovação" || statusReal === "reenviado";
+  const concluidoReal = statusReal === "concluído";
+
+  async function reenviarRevisao() {
+    const itens = (det.revisao?.itens || []).map(it => ({
+      dia: it.dia,
+      corrigido: !!(respostasRevisao[it.dia]?.corrigido),
+      justificativa: respostasRevisao[it.dia]?.justificativa || "",
+    }));
+    const faltando = itens.find(it => !it.corrigido && !String(it.justificativa).trim());
+    if (faltando) {
+      avisar("O dia " + formatDateShort(faltando.dia) + " precisa ser corrigido (marque a caixa, depois de ajustar o lançamento) ou justificado.");
+      return;
+    }
+    setReenviando(true);
+    try {
+      await apiReenviarRevisao(usuario.email, usuario.email, periodo, itens);
+      await carregarDet();
+    } catch (e) {
+      avisar(e.message || "Erro ao reenviar.");
+    } finally {
+      setReenviando(false);
+    }
+  }
+
   const jaEnviado = envio?.status === "enviado";
   const pendente = envio?.status === "pendente";
   const reaberto = envio?.status === "reaberto";
@@ -2010,7 +2065,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       return;
     }
     const acao = jaEnviado ? "reenviar" : "fechar e enviar";
-    if (!(await confirmar(`Depois de ${acao}, os lançamentos deste período ficam travados pra edição. Continuar?`))) return;
+    if (!(await confirmar(`Depois de ${acao} para aprovação, os lançamentos deste período ficam travados pra edição até a decisão do aprovador. Continuar?`))) return;
 
     if (!navigator.onLine) {
       onPendente(assinatura);
@@ -2020,8 +2075,9 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
     try {
       const ret = await apiAprovarEEmitir(periodo, assinatura, usuario.email);
       onEmitido(ret, assinatura);
+      await carregarDet();
     } catch (e) {
-      setErro(e.message || "Erro ao emitir. Tente de novo.");
+      setErro(e.message || "Erro ao enviar. Tente de novo.");
     } finally {
       setEnviando(false);
     }
@@ -2042,11 +2098,20 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       <div className="flex items-center justify-between mb-1">
         <h2 className="font-semibold text-gray-800">📋 Revisão · {periodLabel(periodo)}</h2>
         <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-          style={jaEnviado ? { background: "#E1F5EE", color: "#085041" } : reaberto ? { background: "#FEF3E2", color: "#854F0B" } : pendente ? { background: "#FEF3E2", color: "#854F0B" } : { background: "#FEF3E2", color: "#854F0B" }}>
-          {jaEnviado ? "✓ Enviado" : reaberto ? "🔓 Reaberto pra correção" : pendente ? "⟳ Envio pendente" : "Fechado · aguardando envio"}
+          style={
+            concluidoReal ? { background: "#E1F5EE", color: "#085041" }
+            : emRevisaoReal ? { background: "#EEEDFE", color: "#3C3489" }
+            : aguardandoOuReenviado ? { background: "#FEF3E2", color: "#854F0B" }
+            : reaberto ? { background: "#FEF3E2", color: "#854F0B" }
+            : pendente ? { background: "#FEF3E2", color: "#854F0B" }
+            : { background: "#FEF3E2", color: "#854F0B" }
+          }>
+          {concluidoReal ? "✓ Concluído" : emRevisaoReal ? "✎ Em revisão" : aguardandoOuReenviado ? "⏳ Aguardando aprovação" : reaberto ? "🔓 Reaberto pra correção" : pendente ? "⟳ Envio pendente" : "Fechado · aguardando envio"}
         </span>
       </div>
-      <p className="text-[11px] text-gray-400 mb-3">Confira tudo antes de fechar e enviar.</p>
+      <p className="text-[11px] text-gray-400 mb-3">
+        {detLoading ? "Verificando status atual…" : detErro ? "Sem conexão — mostrando o último status conhecido no aparelho." : "Confira tudo antes de enviar para aprovação."}
+      </p>
 
       {/* ── Totais ── */}
       <div className="rounded-xl p-3 mb-3" style={{ background: BTJ_NAVY }}>
@@ -2067,6 +2132,44 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
           <span className="text-lg font-bold" style={{ color: BTJ_BLUE }}>R$ {fmt(totalGeral)}</span>
         </div>
       </div>
+
+      {/* ── Painel de revisão do aprovador (quando ele devolveu pra correção) ── */}
+      {emRevisaoReal && det.revisao && (
+        <div className="rounded-xl overflow-hidden mb-3" style={{ border: "1px solid #CECBF6" }}>
+          <div className="px-3.5 py-2.5" style={{ background: "#EEEDFE" }}>
+            <p className="text-xs font-semibold" style={{ color: "#26215C" }}>✎ O aprovador pediu revisão · rodada {det.revisao.rodada || 1}</p>
+            <p className="text-[11px] mt-0.5" style={{ color: "#3C3489" }}>
+              {(det.revisao.itens || []).length} dia(s) marcado(s){det.revisao.solicitadoPorNome ? ` · por ${det.revisao.solicitadoPorNome}` : ""}
+            </p>
+            {det.revisao.observacao && <p className="text-[11px] mt-1" style={{ color: "#3C3489" }}>Obs.: {det.revisao.observacao}</p>}
+          </div>
+          {(det.revisao.itens || []).map((it, i) => {
+            const resp = respostasRevisao[it.dia] || { corrigido: false, justificativa: "" };
+            return (
+              <div key={i} className="px-3.5 py-3" style={{ borderTop: "1px solid #F1EFE8" }}>
+                <p className="text-xs font-semibold mb-1" style={{ color: BTJ_NAVY }}>{formatDateShort(it.dia)} · {weekdayAbrev(it.dia)}</p>
+                <p className="text-xs text-gray-600 mb-2">{it.apontamento || <span className="text-gray-400">(sem observação)</span>}</p>
+                <label className="flex items-center gap-2 text-[11px] text-gray-600 mb-1.5">
+                  <input type="checkbox" checked={resp.corrigido}
+                    onChange={e => setRespostasRevisao(prev => ({ ...prev, [it.dia]: { ...resp, corrigido: e.target.checked } }))} />
+                  Já corrigi o lançamento desse dia (na tela de Relatório)
+                </label>
+                <input type="text" value={resp.justificativa}
+                  onChange={e => setRespostasRevisao(prev => ({ ...prev, [it.dia]: { ...resp, justificativa: e.target.value } }))}
+                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                  placeholder="Justificativa (obrigatória se não corrigir)"
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs" />
+              </div>
+            );
+          })}
+          <div className="px-3.5 py-3" style={{ borderTop: "1px solid #F1EFE8" }}>
+            <button onClick={reenviarRevisao} disabled={reenviando}
+              className="w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+              {reenviando ? "Reenviando…" : "Reenviar para aprovação"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Inconsistências ── */}
       {problemas.length > 0 && (
@@ -2115,35 +2218,45 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
         })}
       </div>
 
-      {/* ── Assinatura ── */}
-      <p className="text-[11px] text-gray-500 mb-1">Assinatura do solicitante <span className="font-semibold" style={{ color: "#B3261E" }}>(obrigatória)</span></p>
-      <div className="flex gap-1.5 mb-2">
-        <button onClick={() => setMostrarAssinatura(true)} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>✍️ Assinar na tela</button>
-        <button onClick={() => arquivoRef.current?.click()} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>🖼️ Enviar arquivo</button>
-      </div>
-      <input ref={arquivoRef} type="file" accept="image/*" className="hidden" onChange={e => { pegarArquivo(e.target.files[0]); e.target.value = ""; }} />
-      {assinatura && (
-        <div className="flex items-center gap-2 mb-2">
-          <img src={assinatura} alt="assinatura" className="h-10 rounded border border-gray-200 bg-white" />
-          <div>
-            <p className="text-[10px] text-gray-400">✓ salva neste aparelho — vale pros próximos relatórios</p>
-            <button onClick={() => setAssinatura(null)} className="text-[10px] text-gray-400 underline">remover</button>
+      {/* ── Assinatura + Enviar — só antes do primeiro envio (aguardando/em
+          revisão/reenviado/concluído já têm seus próprios painéis acima/abaixo) ── */}
+      {!pendente && !aguardandoOuReenviado && !emRevisaoReal && !concluidoReal && (
+        <>
+          <p className="text-[11px] text-gray-500 mb-1">Assinatura do solicitante <span className="font-semibold" style={{ color: "#B3261E" }}>(obrigatória)</span></p>
+          <div className="flex gap-1.5 mb-2">
+            <button onClick={() => setMostrarAssinatura(true)} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>✍️ Assinar na tela</button>
+            <button onClick={() => arquivoRef.current?.click()} className="flex-1 rounded-lg py-2 text-xs font-medium border" style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>🖼️ Enviar arquivo</button>
           </div>
-        </div>
-      )}
-      {mostrarAssinatura && (
-        <AssinaturaModal
-          onConfirm={(png) => { setAssinatura(png); setMostrarAssinatura(false); }}
-          onCancel={() => setMostrarAssinatura(false)}
-        />
+          <input ref={arquivoRef} type="file" accept="image/*" className="hidden" onChange={e => { pegarArquivo(e.target.files[0]); e.target.value = ""; }} />
+          {assinatura && (
+            <div className="flex items-center gap-2 mb-2">
+              <img src={assinatura} alt="assinatura" className="h-10 rounded border border-gray-200 bg-white" />
+              <div>
+                <p className="text-[10px] text-gray-400">✓ salva neste aparelho — vale pros próximos relatórios</p>
+                <button onClick={() => setAssinatura(null)} className="text-[10px] text-gray-400 underline">remover</button>
+              </div>
+            </div>
+          )}
+          {mostrarAssinatura && (
+            <AssinaturaModal
+              onConfirm={(png) => { setAssinatura(png); setMostrarAssinatura(false); }}
+              onCancel={() => setMostrarAssinatura(false)}
+            />
+          )}
+        </>
       )}
 
       {/* ── Retorno do envio ── */}
-      {jaEnviado && retorno && (
+      {concluidoReal && (
         <div className="rounded-xl p-3 mb-2" style={{ background: "#E1F5EE", border: "1px solid #9BD8C3" }}>
-          <p className="text-xs font-semibold mb-0.5" style={{ color: "#085041" }}>✓ Relatório enviado para {retorno.enviadoPara}</p>
-          <p className="text-[11px]" style={{ color: "#0F6E56" }}>em {retorno.enviadoEm}{retorno.comAssinatura ? " · com assinatura" : ""}</p>
-          {retorno.reemissao && <p className="text-[10px] mt-1" style={{ color: "#6B4409" }}>⚠ Este período já havia sido emitido — os arquivos anteriores foram substituídos.</p>}
+          <p className="text-xs font-semibold mb-0.5" style={{ color: "#085041" }}>✓ Relatório aprovado e emitido</p>
+          <p className="text-[11px]" style={{ color: "#0F6E56" }}>{det.emitidoEm ? `em ${det.emitidoEm}` : ""}</p>
+        </div>
+      )}
+      {aguardandoOuReenviado && (
+        <div className="rounded-xl p-3 mb-2" style={{ background: "#FEF3E2", border: "1px solid #F5C97A" }}>
+          <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>⏳ Enviado — aguardando a decisão do aprovador</p>
+          <p className="text-[11px] mt-0.5" style={{ color: "#854F0B" }}>Os lançamentos deste período ficam travados até lá. O PDF/Excel só saem depois da aprovação.</p>
         </div>
       )}
       {pendente && (
@@ -2157,34 +2270,45 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
         </div>
       )}
 
-      {/* ── Reabertura ── */}
+      {/* ── Reabertura (só depois de concluído de verdade) ── */}
       {reaberto && (
         <div className="rounded-xl px-3 py-2.5 mb-2" style={{ background: "#FFF7E6", border: "1px solid #F2D9A0" }}>
           <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>🔓 Reabertura aprovada — período liberado pra correção</p>
           <p className="text-[11px] mt-0.5" style={{ color: "#854F0B" }}>Edite os lançamentos de km e despesas e depois feche e reenvie. Os arquivos anteriores serão substituídos.</p>
         </div>
       )}
-      {jaEnviado && (reabPendente || reabEnviada) && (
+      {concluidoReal && (reabPendente || reabEnviada) && (
         <div className="rounded-xl px-3 py-2.5 mb-2" style={{ background: "#FFF7E6", border: "1px solid #F2D9A0" }}>
           <p className="text-xs font-semibold" style={{ color: "#854F0B" }}>⏳ Reabertura solicitada — aguardando aprovação</p>
           <p className="text-[11px] mt-0.5" style={{ color: "#854F0B" }}>O aprovador foi avisado por e-mail. Quando aprovar, o período destrava aqui no app pra você corrigir e reenviar.</p>
         </div>
       )}
 
-      {/* ── Fechar e enviar / Reenviar ── */}
-      <button onClick={enviar} disabled={enviando || (problemas.length > 0 && !jaEnviado)}
-        className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
-        style={{ background: jaEnviado ? "#0F6E56" : BTJ_BLUE }}>
-        {enviando ? "⟳ Gerando e enviando (15-20s)..." : jaEnviado ? "↻ Reenviar relatório" : pendente ? "⟳ Tentar enviar agora" : reaberto ? "🔒 Fechar e reenviar relatório" : "🔒 Fechar e enviar relatório"}
-      </button>
-      {problemas.length > 0 && !jaEnviado && <p className="text-[10px] text-center" style={{ color: "#C62A2F" }}>Resolva as pendências acima pra liberar o envio</p>}
-      {jaEnviado && retorno && (
+      {/* ── Enviar (só quando ainda não há submissão em andamento) ── */}
+      {!pendente && !aguardandoOuReenviado && !emRevisaoReal && !concluidoReal && (
+        <>
+          <button onClick={enviar} disabled={enviando || problemas.length > 0}
+            className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
+            style={{ background: BTJ_BLUE }}>
+            {enviando ? "⟳ Enviando..." : reaberto ? "🔒 Fechar e reenviar relatório" : "🔒 Fechar e enviar para aprovação"}
+          </button>
+          {problemas.length > 0 && <p className="text-[10px] text-center" style={{ color: "#C62A2F" }}>Resolva as pendências acima pra liberar o envio</p>}
+        </>
+      )}
+      {pendente && (
+        <button onClick={enviar} disabled={enviando}
+          className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
+          style={{ background: BTJ_BLUE }}>
+          {enviando ? "⟳ Enviando..." : "⟳ Tentar enviar agora"}
+        </button>
+      )}
+      {concluidoReal && det.pdfUrl && (
         <div className="flex gap-1.5 mt-2">
-          <button onClick={() => window.open(retorno.pdfUrl, "_blank")} className="flex-1 rounded-lg py-2 text-xs font-medium border border-gray-200 text-gray-600">📄 Ver PDF</button>
-          <button onClick={() => window.open(retorno.excelUrl, "_blank")} className="flex-1 rounded-lg py-2 text-xs font-medium border border-gray-200 text-gray-600">📊 Ver Excel</button>
+          <button onClick={() => window.open(det.pdfUrl, "_blank")} className="flex-1 rounded-lg py-2 text-xs font-medium border border-gray-200 text-gray-600">📄 Ver PDF</button>
+          {det.xlsxUrl && <button onClick={() => window.open(det.xlsxUrl, "_blank")} className="flex-1 rounded-lg py-2 text-xs font-medium border border-gray-200 text-gray-600">📊 Ver Excel</button>}
         </div>
       )}
-      {jaEnviado && !reabPendente && !reabEnviada && (
+      {concluidoReal && !reabPendente && !reabEnviada && (
         <button onClick={() => setPedindoReab(true)}
           className="w-full rounded-lg py-2 text-xs font-medium mt-1.5 border" style={{ borderColor: "#F2D9A0", color: "#854F0B", background: "#FFFBEF" }}>
           🔓 Solicitar reabertura pra corrigir
