@@ -2164,7 +2164,8 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
           })}
           <div className="px-3.5 py-3" style={{ borderTop: "1px solid #F1EFE8" }}>
             <button onClick={reenviarRevisao} disabled={reenviando}
-              className="w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+              className="w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-60 flex items-center justify-center gap-2" style={{ background: BTJ_BLUE }}>
+              {reenviando && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {reenviando ? "Reenviando…" : "Reenviar para aprovação"}
             </button>
           </div>
@@ -2288,18 +2289,20 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
       {!pendente && !aguardandoOuReenviado && !emRevisaoReal && !concluidoReal && (
         <>
           <button onClick={enviar} disabled={enviando || problemas.length > 0}
-            className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
+            className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5 flex items-center justify-center gap-2"
             style={{ background: BTJ_BLUE }}>
-            {enviando ? "⟳ Enviando..." : reaberto ? "🔒 Fechar e reenviar relatório" : "🔒 Fechar e enviar para aprovação"}
+            {enviando && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+            {enviando ? "Enviando..." : reaberto ? "🔒 Fechar e reenviar relatório" : "🔒 Fechar e enviar para aprovação"}
           </button>
           {problemas.length > 0 && <p className="text-[10px] text-center" style={{ color: "#C62A2F" }}>Resolva as pendências acima pra liberar o envio</p>}
         </>
       )}
       {pendente && (
         <button onClick={enviar} disabled={enviando}
-          className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5"
+          className="w-full rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-50 mb-1.5 flex items-center justify-center gap-2"
           style={{ background: BTJ_BLUE }}>
-          {enviando ? "⟳ Enviando..." : "⟳ Tentar enviar agora"}
+          {enviando && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+          {enviando ? "Enviando..." : "⟳ Tentar enviar agora"}
         </button>
       )}
       {concluidoReal && det.pdfUrl && (
