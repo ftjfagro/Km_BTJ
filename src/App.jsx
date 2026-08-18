@@ -328,9 +328,10 @@ async function apiAddCarro(carro, colaborador) {
   return data;
 }
 
-// Emite o relatório do período: o backend gera PDF+Excel, arquiva no Drive e
-// envia o e-mail. Demora ~15-20s. Retorna { ok, periodo, reemissao,
-// enviadoPara, comAssinatura, pdfUrl, excelUrl, enviadoEm }.
+// Envia o relatório do período para APROVAÇÃO — não emite PDF/e-mail na hora
+// (ATUALIZADO 17/08: antes emitia direto; agora cria a submissão no dashboard
+// e só o aprovador, ao aprovar, gera o PDF/Excel de verdade). Retorna
+// { ok, id, status: "aguardando aprovação" }.
 async function apiAprovarEEmitir(periodo, assinaturaBase64, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -338,7 +339,33 @@ async function apiAprovarEEmitir(periodo, assinaturaBase64, colaborador) {
     body: JSON.stringify({ action: "aprovarEEmitir", periodo, assinaturaBase64: assinaturaBase64 || undefined, colaborador }),
   });
   const data = await res.json();
-  if (!data.ok) throw new Error(data.error || "Erro ao emitir o relatório");
+  if (!data.ok) throw new Error(data.error || "Erro ao enviar o relatório para aprovação");
+  return data;
+}
+
+// Status REAL do período (fonte: mesma aba Revisoes que o dashboard do
+// aprovador usa) — diz se está aguardando aprovação, em revisão (com os dias
+// marcados pelo aprovador), reenviado, ou concluído (com PDF/Excel prontos).
+async function apiDetalheRelatorio(usuario, colaborador, periodo) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "detalheRelatorio", usuario, colaborador, periodo }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao consultar o status do relatório");
+  return data;
+}
+
+// Reenvia o relatório depois de corrigir/justificar os dias marcados pelo aprovador.
+async function apiReenviarRevisao(usuario, colaborador, periodo, itens) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "reenviarRevisao", usuario, colaborador, periodo, itens }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao reenviar o relatório");
   return data;
 }
 
