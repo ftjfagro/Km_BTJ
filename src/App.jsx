@@ -3694,6 +3694,11 @@ export default function App() {
                           {s.pessoal != null && ` · pessoal ${s.pessoal.toLocaleString("pt-BR")} km`}
                           {" · "}R$ {s.receber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                         </p>
+                        {agrupamento === "mes" && (
+                          <p className="text-[9px] mt-0.5" style={{ color: "#B0AEA6" }}>
+                            DEBUG · local={JSON.stringify(statusPeriodo(key, envios, hojeKey))} · backend={JSON.stringify(statusBackend[key] || null)}
+                          </p>
+                        )}
                         {agrupamento === "mes" && !isCur && (
                           <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
                             className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
