@@ -2652,13 +2652,20 @@ export default function App() {
   // "fechado · não enviado" pra sempre, mesmo já concluído de verdade.
   // Refaz sempre que a tela muda, então abrir Resumos já chega atualizado.
   const [statusBackend, setStatusBackend] = useState({});
-  useEffect(() => {
-    if (!usuario || !online) return;
-    apiListarRelatorios(usuario.email).then(d => {
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
+  function refreshStatusBackend() {
+    if (!usuario || !navigator.onLine) return Promise.resolve();
+    setStatusRefreshing(true);
+    return apiListarRelatorios(usuario.email).then(d => {
       const mapa = {};
       (d.relatorios || []).forEach(r => { mapa[r.periodo] = { status: r.status, rodada: r.rodada }; });
       setStatusBackend(mapa);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => setStatusRefreshing(false));
+  }
+  useEffect(() => {
+    if (!usuario || !online) return;
+    refreshStatusBackend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usuario, online, screen]);
 
   // Combina o status REAL do backend com o que o aparelho sabia localmente.
@@ -3610,7 +3617,15 @@ export default function App() {
         {/* ═══ TELA DE RESUMOS ═══ */}
         {screen === "resumos" && (
           <>
-            <div className="rounded-xl p-3.5 mt-2.5" style={{ background: BTJ_NAVY }}>
+            <div className="flex justify-end mt-2.5">
+              <button onClick={refreshStatusBackend} disabled={statusRefreshing}
+                className="text-[11px] px-3 py-1.5 rounded-lg border flex items-center gap-1.5 disabled:opacity-60"
+                style={{ borderColor: BTJ_BLUE, color: BTJ_NAVY }}>
+                {statusRefreshing && <span className="inline-block w-3 h-3 border-2 rounded-full animate-spin" style={{ borderColor: BTJ_BLUE, borderTopColor: "transparent" }} />}
+                {statusRefreshing ? "Atualizando..." : "↻ Atualizar status"}
+              </button>
+            </div>
+            <div className="rounded-xl p-3.5 mt-2" style={{ background: BTJ_NAVY }}>
               <p className="text-xs font-medium mb-2" style={{ color: BTJ_LIGHT }}>{monthLabelFromKey(curKey)}</p>
               <div className="flex gap-4 items-end">
                 <div>
