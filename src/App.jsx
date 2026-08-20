@@ -510,7 +510,7 @@ async function apiSave(record, colaborador) {
     body: JSON.stringify({
       action: "save",
       data: record.data,
-      tipo: "Viagem",
+      tipo: record.tipo || "Viagem",
       origem: record.origem || "",
       destino: record.destino || "",
       kmInicial: record.kmInicial ?? "",
@@ -800,7 +800,10 @@ function kmOf(r) {
   if (r.kmInicial == null || r.kmFinal == null) return 0;
   return Math.max(0, r.kmFinal - r.kmInicial);
 }
+// Um dia marcado como "Sem viagem" (ex: foi de Uber, sem usar o carro) NUNCA
+// conta como pendência — é intencional não ter KM nesse dia.
 function isOpen(r) {
+  if (r.tipo === "Sem viagem") return false;
   return r.kmInicial == null || r.kmFinal == null;
 }
 function monthSummary(records, key, taxas, colaboradores, solicitante, despesas, keyFn) {
@@ -1124,7 +1127,11 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
     setSaving(true);
     try {
       await apiSaveDespesa({
-        data, carro, tipo, valor: valorFinal,
+        // Carro só faz sentido pra Pedágio (o tag está vinculado a um carro
+        // específico). Pros demais tipos (Uber, hotel, alimentação...), o
+        // carro selecionado na Home é irrelevante e não deve ir pra planilha
+        // como se a despesa tivesse relação com aquele veículo.
+        data, carro: tipo === "Pedágio" ? carro : "—", tipo, valor: valorFinal,
         descricao, comprovanteImage: compB64 || undefined, origem: "manual",
         pessoasRateio: precisaRateio ? nPessoas : 1,
         rateioCom: precisaRateio ? comQuem : "",
@@ -1934,7 +1941,7 @@ function Aprovacoes({ usuario, onVoltar }) {
 }
 
 // ─── Tela: Revisão do Relatório do Mês (conferência antes de fechar/enviar) ──
-function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, usuario, envio, reabertura, onVoltar, onEmitido, onPendente }) {
+function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, usuario, envio, reabertura, onVoltar, onEmitido, onPendente, onDespesasChanged }) {
   const [assinatura, setAssinaturaState] = useState(envio?.assinaturaBase64 || loadAssinatura());
   // Toda mudança de assinatura também persiste no aparelho (null = esquecer)
   function setAssinatura(png) {
@@ -1945,6 +1952,39 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
   const arquivoRef = useRef(null);
+
+  // ── Edição inline de despesas (incl. pedágio) direto na linha do tempo ──
+  // Sem isso, corrigir um pedágio errado exigia sair da revisão, ir em
+  // Despesas → Ver pedágios, editar lá, e voltar. O backend já bloqueia essa
+  // edição sozinho se o período estiver aguardando aprovação/em revisão
+  // (rotearDashboard_ no Dashboard.gs), então não precisa duplicar a trava aqui.
+  const [editandoDespesa, setEditandoDespesa] = useState(null); // { id, data, valor, descricao }
+  const [despesaBusy, setDespesaBusy] = useState(false);
+  async function salvarEdicaoDespesa() {
+    setDespesaBusy(true);
+    try {
+      await apiUpdateDespesa({ id: editandoDespesa.id, data: editandoDespesa.data, valor: Number(editandoDespesa.valor) || 0, descricao: editandoDespesa.descricao });
+      setEditandoDespesa(null);
+      if (onDespesasChanged) await onDespesasChanged();
+    } catch (e) {
+      avisar("Erro ao salvar: " + (e.message || ""));
+    } finally {
+      setDespesaBusy(false);
+    }
+  }
+  async function excluirDespesaInline(id) {
+    if (!(await confirmar("Excluir este lançamento? Não dá pra desfazer."))) return;
+    setDespesaBusy(true);
+    try {
+      await apiDeleteDespesa(id);
+      setEditandoDespesa(null);
+      if (onDespesasChanged) await onDespesasChanged();
+    } catch (e) {
+      avisar("Erro ao excluir: " + (e.message || ""));
+    } finally {
+      setDespesaBusy(false);
+    }
+  }
 
   // ── Status REAL do backend (mesma fonte que o dashboard do aprovador usa) ──
   // Sem isso, o app só sabia "enviei/não enviei" (guardado no aparelho) — não
@@ -2035,7 +2075,9 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
   const totalGeral = valorKm + totalPedagio + totalOutras;
 
   // ── Caça às inconsistências ──
-  const diasComViagem = new Set(recs.filter(r => !isOpen(r)).map(r => r.data));
+  // "Viagem real" = tem km de fato — um dia "Sem viagem" não conta aqui,
+  // mesmo não sendo mais tratado como pendência.
+  const diasComViagem = new Set(recs.filter(r => r.kmInicial != null && r.kmFinal != null).map(r => r.data));
   const problemas = [];
   recs.filter(isOpen).forEach(r => problemas.push({
     data: r.data,
@@ -2200,19 +2242,63 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
             <div key={data} className="rounded-lg px-3 py-2" style={{ background: temProblema ? "#FFF7F7" : "#FAFAF8", border: temProblema ? "1px solid #F5B8B8" : "1px solid transparent" }}>
               <p className="text-[11px] font-semibold text-gray-700 mb-0.5">{formatDateShort(data)} · {weekdayAbrev(data)}{temProblema ? " ⚠" : ""}</p>
               {viagens.map(r => (
-                <div key={r.id} className="flex justify-between items-baseline">
-                  <span className="text-[11px] text-gray-600">🚗 {(r.carro || "").split(" ")[0]} · {r.origem || "?"} → {r.destino || "?"} · {isOpen(r) ? "— km" : `${kmOf(r).toLocaleString("pt-BR")} km`}</span>
-                  <span className="text-[11px] font-medium text-gray-700">{isOpen(r) ? "—" : `R$ ${fmt(kmOf(r) * taxaVigente(taxas, colaboradores, usuario.nome, r.data))}`}</span>
-                </div>
+                r.tipo === "Sem viagem" ? (
+                  <div key={r.id} className="flex justify-between items-baseline">
+                    <span className="text-[11px] text-gray-500">🅿️ sem viagem de carro{r.observacao ? ` · ${r.observacao}` : ""}</span>
+                    <span className="text-[11px] text-gray-400">—</span>
+                  </div>
+                ) : (
+                  <div key={r.id} className="flex justify-between items-baseline">
+                    <span className="text-[11px] text-gray-600">🚗 {(r.carro || "").split(" ")[0]} · {r.origem || "?"} → {r.destino || "?"} · {isOpen(r) ? "— km" : `${kmOf(r).toLocaleString("pt-BR")} km`}</span>
+                    <span className="text-[11px] font-medium text-gray-700">{isOpen(r) ? "—" : `R$ ${fmt(kmOf(r) * taxaVigente(taxas, colaboradores, usuario.nome, r.data))}`}</span>
+                  </div>
+                )
               ))}
               {despsDia.map(d => (
-                <div key={d.id} className="flex justify-between items-baseline">
-                  <span className="text-[11px] text-gray-500">
-                    {(d.tipo || "").toLowerCase().indexOf("ped") === 0 ? "🛣️" : "💳"} {d.tipo}{d.descricao ? ` · ${d.descricao}` : ""}
-                    {!d.comprovante && d.origem === "manual" && (d.tipo || "").toLowerCase().indexOf("ped") !== 0 ? " ⚠" : ""}
-                  </span>
-                  <span className="text-[11px] font-medium text-gray-700">R$ {fmt(Number(d.valor) || 0)}</span>
-                </div>
+                editandoDespesa?.id === d.id ? (
+                  <div key={d.id} className="rounded-lg p-2 my-1" style={{ background: "#F8FAFC" }}>
+                    <p className="text-[10px] font-medium mb-1.5" style={{ color: "#185FA5" }}>Editando · {d.tipo}</p>
+                    <div className="flex gap-1.5 mb-1.5">
+                      <input type="date" value={editandoDespesa.data}
+                        onChange={e => setEditandoDespesa(prev => ({ ...prev, data: e.target.value }))}
+                        className="flex-1 border border-gray-200 rounded-lg px-2 py-1 text-xs" />
+                      <input type="number" inputMode="decimal" value={editandoDespesa.valor}
+                        onChange={e => setEditandoDespesa(prev => ({ ...prev, valor: e.target.value }))}
+                        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                        className="w-24 border border-gray-200 rounded-lg px-2 py-1 text-xs" />
+                    </div>
+                    <input type="text" value={editandoDespesa.descricao} placeholder="descrição"
+                      onChange={e => setEditandoDespesa(prev => ({ ...prev, descricao: e.target.value }))}
+                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                      className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs mb-1.5" />
+                    <div className="flex gap-1.5">
+                      <button onClick={salvarEdicaoDespesa} disabled={despesaBusy}
+                        className="flex-[2] rounded-lg py-1.5 text-xs font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+                        {despesaBusy ? "..." : "Salvar"}
+                      </button>
+                      <button onClick={() => setEditandoDespesa(null)} disabled={despesaBusy}
+                        className="flex-1 rounded-lg py-1.5 text-xs text-gray-600 border border-gray-200">Cancelar</button>
+                      <button onClick={() => excluirDespesaInline(d.id)} disabled={despesaBusy}
+                        className="flex-1 rounded-lg py-1.5 text-xs" style={{ background: "#FDECEC", color: "#C62A2F" }}>🗑</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button key={d.id}
+                    onClick={() => {
+                      if (aguardandoOuReenviado || emRevisaoReal || concluidoReal) {
+                        avisar("Este período está travado — não dá pra editar despesas agora.");
+                        return;
+                      }
+                      setEditandoDespesa({ id: d.id, data: d.data, valor: d.valor, descricao: d.descricao || "" });
+                    }}
+                    className="w-full flex justify-between items-baseline text-left">
+                    <span className="text-[11px] text-gray-500">
+                      {(d.tipo || "").toLowerCase().indexOf("ped") === 0 ? "🛣️" : "💳"} {d.tipo}{d.descricao ? ` · ${d.descricao}` : ""}
+                      {!d.comprovante && d.origem === "manual" && (d.tipo || "").toLowerCase().indexOf("ped") !== 0 ? " ⚠" : ""}
+                    </span>
+                    <span className="text-[11px] font-medium text-gray-700">R$ {fmt(Number(d.valor) || 0)} ✎</span>
+                  </button>
+                )
               ))}
             </div>
           );
@@ -2521,6 +2607,9 @@ export default function App() {
   const [fKmIni, setFKmIni] = useState(null);
   const [fKmFin, setFKmFin] = useState(null);
   const [fObs, setFObs] = useState("");
+  // "Sem viagem de carro" — dias em que houve trabalho (ex: cliente visitado
+  // de Uber) mas o carro próprio não foi usado, então não há KM pra apontar.
+  const [fSemViagem, setFSemViagem] = useState(false);
   const [loadingIni, setLoadingIni] = useState(false);
   const [loadingFin, setLoadingFin] = useState(false);
   const [queuedIni, setQueuedIni] = useState(false);
@@ -2592,6 +2681,7 @@ export default function App() {
             id: `sheet-${k}`,
             data: rem.data,
             carro: rem.carro || CARRO_PADRAO,
+            tipo: rem.tipo || "Viagem",
             origem: rem.origem,
             destino: rem.destino,
             kmInicial: rem.kmInicial,
@@ -2626,10 +2716,12 @@ export default function App() {
       setFKmFin(rec.kmFinal ?? null);
       setFObs(rec.observacao || "");
       setFOrigemGps(false);
+      setFSemViagem(rec.tipo === "Sem viagem");
     } else if (!rec && editingId !== null) {
       setEditingId(null);
       setFOrigem(""); setFDestino(""); setFKmIni(null); setFKmFin(null); setFObs("");
       setFOrigemGps(false);
+      setFSemViagem(false);
     }
     const q = loadPhotoQueue();
     setQueuedIni(q.some(p => p.date === fData && p.carro === fCarro && p.phase === "inicial"));
@@ -2638,8 +2730,8 @@ export default function App() {
 
   // ── Coerência em tempo real (por carro) ──
   useEffect(() => {
-    setCoherErr(checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro));
-  }, [fKmIni, fKmFin, fData, fCarro, records, editingId]);
+    setCoherErr(fSemViagem ? null : checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro));
+  }, [fKmIni, fKmFin, fData, fCarro, records, editingId, fSemViagem]);
 
   // ── GPS: preenche origem ao abrir (se vazia) ──
   useEffect(() => {
@@ -2805,7 +2897,12 @@ export default function App() {
       setMostrarCadastroCarroPrincipal(true);
       return;
     }
-    if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
+    if (fSemViagem) {
+      if (!fObs.trim()) {
+        avisar("Marcado como 'sem viagem de carro' — escreva na observação o que foi feito nesse dia (ex: visita ao cliente de Uber).");
+        return;
+      }
+    } else if (fKmIni == null && fKmFin == null && !fObs && !fDestino) {
       avisar("Preencha ao menos um KM, destino ou observação.");
       return;
     }
@@ -2813,7 +2910,7 @@ export default function App() {
       avisar("A data do apontamento está ausente ou inválida. Selecione a data antes de salvar.");
       return;
     }
-    const err = checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro);
+    const err = fSemViagem ? null : checkCoherence(records, fData, fKmIni, fKmFin, editingId, fCarro);
     if (err) {
       setCoherErr(err);
       avisar("⛔ " + err.msg);
@@ -2829,10 +2926,11 @@ export default function App() {
       id: existing?.id ?? editingId ?? Date.now(),
       data: fData,
       carro: fCarro,
+      tipo: fSemViagem ? "Sem viagem" : "Viagem",
       origem: fOrigem,
       destino: fDestino,
-      kmInicial: fKmIni,
-      kmFinal: fKmFin,
+      kmInicial: fSemViagem ? null : fKmIni,
+      kmFinal: fSemViagem ? null : fKmFin,
       observacao: fObs,
       synced: false,
     };
@@ -3139,48 +3237,62 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex gap-2 mb-2.5">
-                <KmBox
-                  label="KM inicial"
-                  value={fKmIni}
-                  state={queuedIni ? "queued" : fKmIni != null ? "done" : "pending"}
-                  loading={loadingIni}
-                  error={coherErr?.field === "ini"}
-                  onCamera={() => fileIniCamRef.current?.click()}
-                  onGallery={() => fileIniGalRef.current?.click()}
-                  onManual={v => setFKmIni(v)}
-                />
-                <KmBox
-                  label="KM final"
-                  value={fKmFin}
-                  state={queuedFin ? "queued" : fKmFin != null ? "done" : "pending"}
-                  loading={loadingFin}
-                  error={coherErr?.field === "fin"}
-                  onCamera={() => fileFinCamRef.current?.click()}
-                  onGallery={() => fileFinGalRef.current?.click()}
-                  onManual={v => setFKmFin(v)}
-                />
-              </div>
-              <input ref={fileIniCamRef} type="file" accept="image/*" capture="environment" className="hidden"
-                onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
-              <input ref={fileIniGalRef} type="file" accept="image/*" className="hidden"
-                onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
-              <input ref={fileFinCamRef} type="file" accept="image/*" capture="environment" className="hidden"
-                onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
-              <input ref={fileFinGalRef} type="file" accept="image/*" className="hidden"
-                onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
+              <label className="flex items-center gap-2 text-xs text-gray-600 mb-2.5 px-0.5">
+                <input type="checkbox" checked={fSemViagem}
+                  onChange={e => {
+                    const v = e.target.checked;
+                    setFSemViagem(v);
+                    if (v) { setFKmIni(null); setFKmFin(null); }
+                  }} />
+                Sem viagem de carro hoje (ex: fui de Uber) — só registrar observação
+              </label>
 
-              {coherErr && (
-                <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#FDECEC" }}>
-                  <span className="text-[11px]" style={{ color: "#C62A2F" }}>⛔ {coherErr.msg}</span>
+              {fSemViagem ? (
+                <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#F5F7FA" }}>
+                  <span className="text-[11px] text-gray-500">Sem KM neste dia. Descreva o que foi feito na observação abaixo (obrigatório).</span>
                 </div>
-              )}
-
-              {fKmIni != null && fKmFin != null && fKmFin >= fKmIni && (
-                <div className="rounded-lg px-2.5 py-2 mb-2" style={{ background: "#E6F1FB" }}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: "#185FA5" }}>Saldo do dia</span>
-                    <span className="text-sm font-semibold" style={{ color: "#0C447C" }}>
+              ) : (
+                <>
+                  <div className="flex gap-2 mb-2.5">
+                    <KmBox
+                      label="KM inicial"
+                      value={fKmIni}
+                      state={queuedIni ? "queued" : fKmIni != null ? "done" : "pending"}
+                      loading={loadingIni}
+                      error={coherErr?.field === "ini"}
+                      onCamera={() => fileIniCamRef.current?.click()}
+                      onGallery={() => fileIniGalRef.current?.click()}
+                      onManual={v => setFKmIni(v)}
+                    />
+                    <KmBox
+                      label="KM final"
+                      value={fKmFin}
+                      state={queuedFin ? "queued" : fKmFin != null ? "done" : "pending"}
+                      loading={loadingFin}
+                      error={coherErr?.field === "fin"}
+                      onCamera={() => fileFinCamRef.current?.click()}
+                      onGallery={() => fileFinGalRef.current?.click()}
+                      onManual={v => setFKmFin(v)}
+                    />
+                  </div>
+                  {coherErr && (
+                    <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#FDECEC" }}>
+                      <span className="text-[11px]" style={{ color: "#C62A2F" }}>⛔ {coherErr.msg}</span>
+                    </div>
+                  )}
+                  <input ref={fileIniCamRef} type="file" accept="image/*" capture="environment" className="hidden"
+                    onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
+                  <input ref={fileIniGalRef} type="file" accept="image/*" className="hidden"
+                    onChange={e => { handlePhoto("inicial", e.target.files[0]); e.target.value = ""; }} />
+                  <input ref={fileFinCamRef} type="file" accept="image/*" capture="environment" className="hidden"
+                    onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
+                  <input ref={fileFinGalRef} type="file" accept="image/*" className="hidden"
+                    onChange={e => { handlePhoto("final", e.target.files[0]); e.target.value = ""; }} />
+                  {fKmIni != null && fKmFin != null && fKmFin >= fKmIni && (
+                    <div className="rounded-lg px-2.5 py-2 mb-2" style={{ background: "#E6F1FB" }}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px]" style={{ color: "#185FA5" }}>Saldo do dia</span>
+                        <span className="text-sm font-semibold" style={{ color: "#0C447C" }}>
                       {(fKmFin - fKmIni).toLocaleString("pt-BR")} km · R$ {((fKmFin - fKmIni) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, fData)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                     </span>
                   </div>
@@ -3208,6 +3320,8 @@ export default function App() {
                   )}
                 </div>
               )}
+                </>
+              )}
 
               <div className="mb-3">
                 <p className="text-[11px] text-gray-500 mb-0.5">Observação do dia</p>
@@ -3227,7 +3341,7 @@ export default function App() {
                 className="w-full rounded-xl py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed"
                 style={{ background: coherErr ? "#E7E5DE" : BTJ_BLUE, color: coherErr ? "#A8A69E" : "#fff" }}
               >
-                {coherErr ? "Salvar (corrija o KM)" : (fKmIni != null && fKmFin != null ? "Salvar apontamento" : "Salvar — completar depois")}
+                {coherErr ? "Salvar (corrija o KM)" : (fSemViagem || (fKmIni != null && fKmFin != null) ? "Salvar apontamento" : "Salvar — completar depois")}
               </button>
             </Card>
 
@@ -3271,6 +3385,7 @@ export default function App() {
             onVoltar={() => { setScreen("resumos"); setRevisaoPeriodo(null); }}
             onEmitido={(ret, assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "enviado", retorno: ret, assinaturaBase64: assinatura, reaberturaId: envios[revisaoPeriodo]?.reaberturaId })}
             onPendente={(assinatura) => setEnvioPeriodo(revisaoPeriodo, { status: "pendente", assinaturaBase64: assinatura, reaberturaId: envios[revisaoPeriodo]?.reaberturaId })}
+            onDespesasChanged={refreshDespesas}
           />
         )}
 
@@ -3484,6 +3599,14 @@ export default function App() {
                                   🗑 Excluir este dia (apaga a viagem do {formatDateShort(r.data)})
                                 </button>
                               </div>
+                            ) : r.tipo === "Sem viagem" ? (
+                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                <span className="text-xs text-gray-600">
+                                  🅿️ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem de carro
+                                  {r.observacao ? <span className="text-gray-400"> · {r.observacao}</span> : null}
+                                </span>
+                                <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>✎</span>
+                              </button>
                             ) : r.soPedagio ? (
                               <div className="w-full flex items-center justify-between px-3.5 py-2">
                                 <span className="text-xs text-gray-400">{formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem registrada</span>
