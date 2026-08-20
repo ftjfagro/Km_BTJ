@@ -393,6 +393,21 @@ async function apiSolicitarReabertura(colaborador, periodo, motivo) {
   return data;
 }
 
+// Status REAL de todos os períodos do colaborador (mesma ação que o
+// dashboard usa) — usado pra corrigir a lista de Resumos, que antes só
+// confiava no controle local do aparelho e ficava desatualizada assim que
+// o aprovador agia em outro lugar (dashboard, ou o próprio app noutro dia).
+async function apiListarRelatorios(usuario) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "listarRelatorios", usuario }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao listar relatórios");
+  return data;
+}
+
 async function apiStatusReaberturas(colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -2630,6 +2645,45 @@ export default function App() {
     }).catch(() => {});
   }, [usuario, online, screen]);
 
+  // ── Status REAL de cada período, direto do backend (mesma fonte que o
+  // dashboard do aprovador usa). Sem isso, a lista de Resumos ficava presa
+  // no que o PRÓPRIO APARELHO lembrava — se o aprovador aprovasse pelo
+  // dashboard, ou o app fosse reinstalado, o período continuava mostrando
+  // "fechado · não enviado" pra sempre, mesmo já concluído de verdade.
+  // Refaz sempre que a tela muda, então abrir Resumos já chega atualizado.
+  const [statusBackend, setStatusBackend] = useState({});
+  useEffect(() => {
+    if (!usuario || !online) return;
+    apiListarRelatorios(usuario.email).then(d => {
+      const mapa = {};
+      (d.relatorios || []).forEach(r => { mapa[r.periodo] = { status: r.status, rodada: r.rodada }; });
+      setStatusBackend(mapa);
+    }).catch(() => {});
+  }, [usuario, online, screen]);
+
+  // Combina o status REAL do backend com o que o aparelho sabia localmente.
+  // "pendente" (fila offline) e "reaberto" (mecanismo antigo de reabertura,
+  // que vive numa aba separada e não é refletido no status do backend) têm
+  // prioridade sobre o backend; pra tudo mais, o backend manda — é a única
+  // fonte que sabe se o aprovador já agiu, inclusive pelo dashboard.
+  function statusRealDoPeriodo(key) {
+    const local = statusPeriodo(key, envios, hojeKey);
+    if (local === "pendente" || local === "reaberto") return local;
+    const back = statusBackend[key];
+    if (back) {
+      const mapa = {
+        "concluído": "concluido",
+        "aguardando aprovação": "aguardando",
+        "em revisão": "revisao",
+        "reenviado": "reenviado",
+        "em curso": "aberto",
+        "atrasado": "atrasado",
+      };
+      return mapa[back.status] || local;
+    }
+    return local; // sem dado do backend ainda (ex: abriu offline) — usa o que já tinha
+  }
+
   // Sou aprovador? (vem do Cadastros, coluna I — sempre fresco via config)
   const ehAprovador = !!(config.colaboradores || []).find(
     c => c.nome?.toLowerCase() === usuario?.nome?.toLowerCase() && c.aprovador
@@ -2827,11 +2881,22 @@ export default function App() {
       mutateRecords(recs => recs.filter(r => !ids.has(r.id)));
     }
     const pending = loadRecords().filter(r => r.synced === false && registroValido_(r));
+    const falhas = [];
     for (const r of pending) {
       try {
         await apiSave(r, usuario.email);
         mutateRecords(recs => recs.map(x => x.id === r.id ? { ...x, synced: true } : x));
-      } catch { /* fica pra próxima */ }
+      } catch (e) {
+        if (navigator.onLine) falhas.push({ data: r.data, carro: r.carro, erro: e.message || "erro desconhecido" });
+      }
+    }
+    if (falhas.length) {
+      avisar(
+        "Alguns apontamentos não conseguiram ser gravados na planilha:\n\n" +
+        falhas.slice(0, 5).map(f => `• ${formatDateBR(f.data)} (${(f.carro || "").split(" ")[0]}): ${f.erro}`).join("\n") +
+        (falhas.length > 5 ? `\n… e mais ${falhas.length - 5}.` : "") +
+        "\n\nEles continuam salvos no aparelho, mas não vão sumir sozinhos — corrija o problema e tente de novo."
+      );
     }
   }
 
@@ -2869,7 +2934,14 @@ export default function App() {
       mutateRecords(recs => recs.map(x => x.id === rec.id ? { ...x, synced: true } : x));
       setUltimaSync(new Date());
       setSyncStatus("ok");
-    } catch {
+    } catch (e) {
+      // Se está online e mesmo assim falhou, não é "sem sinal" — é um erro
+      // de verdade (ex: empresa não vinculada a este colaborador) que vai
+      // continuar falhando pra sempre se só ficarmos reagendando em
+      // silêncio. Mostra o motivo real em vez de fingir que é offline.
+      if (navigator.onLine) {
+        avisar("Não consegui gravar este apontamento na planilha:\n\n" + (e.message || "erro desconhecido") + "\n\nEle continua salvo neste aparelho, mas não vai sumir sozinho — corrija o problema (ex: empresa selecionada) e tente de novo.");
+      }
       setSyncStatus("error");
     }
   }
@@ -3220,43 +3292,44 @@ export default function App() {
 
             {/* Formulário do dia */}
             <Card className="mt-2.5 p-3.5">
-              <div className="mb-2.5">
-                <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
-                <select
-                  value={fCarro}
-                  onChange={e => {
-                    if (e.target.value === NOVO_CARRO_VALUE) { setMostrarCadastroCarroPrincipal(true); return; }
-                    setFCarro(e.target.value); saveLastCar(e.target.value);
-                  }}
-                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white font-medium"
-                  style={{ color: BTJ_NAVY }}
-                >
-                  {!(config.carros || []).length && <option value="">— cadastre seu veículo —</option>}
-                  {(config.carros || []).map(c => <option key={c} value={c}>{c}</option>)}
-                  <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
-                </select>
-                {mostrarCadastroCarroPrincipal && (
-                  <CadastrarCarroModal
-                    colaborador={usuario.email}
-                    onCancel={() => setMostrarCadastroCarroPrincipal(false)}
-                    onSaved={(novoCarro) => {
-                      handleNovoCarro(novoCarro);
-                      setFCarro(novoCarro); saveLastCar(novoCarro);
-                      setMostrarCadastroCarroPrincipal(false);
+              <div className="flex gap-2 mb-2.5">
+                <div className={(config.empresas || []).length > 1 ? "flex-1" : "w-full"}>
+                  <p className="text-[11px] text-gray-500 mb-0.5">🚗 Carro</p>
+                  <select
+                    value={fCarro}
+                    onChange={e => {
+                      if (e.target.value === NOVO_CARRO_VALUE) { setMostrarCadastroCarroPrincipal(true); return; }
+                      setFCarro(e.target.value); saveLastCar(e.target.value);
                     }}
-                  />
+                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white font-medium"
+                    style={{ color: BTJ_NAVY }}
+                  >
+                    {!(config.carros || []).length && <option value="">— cadastre seu veículo —</option>}
+                    {(config.carros || []).map(c => <option key={c} value={c}>{c}</option>)}
+                    <option value={NOVO_CARRO_VALUE}>+ Outro (cadastrar novo)</option>
+                  </select>
+                  {mostrarCadastroCarroPrincipal && (
+                    <CadastrarCarroModal
+                      colaborador={usuario.email}
+                      onCancel={() => setMostrarCadastroCarroPrincipal(false)}
+                      onSaved={(novoCarro) => {
+                        handleNovoCarro(novoCarro);
+                        setFCarro(novoCarro); saveLastCar(novoCarro);
+                        setMostrarCadastroCarroPrincipal(false);
+                      }}
+                    />
+                  )}
+                </div>
+                {(config.empresas || []).length > 1 && (
+                  <div className="flex-1">
+                    <p className="text-[11px] text-gray-500 mb-0.5">Empresa</p>
+                    <select value={fEmpresa} onChange={e => setFEmpresa(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+                      {config.empresas.map(e => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </div>
                 )}
               </div>
-
-              {(config.empresas || []).length > 1 && (
-                <div className="mb-2.5">
-                  <p className="text-[11px] text-gray-500 mb-0.5">Empresa</p>
-                  <select value={fEmpresa} onChange={e => setFEmpresa(e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
-                    {config.empresas.map(e => <option key={e} value={e}>{e}</option>)}
-                  </select>
-                </div>
-              )}
               <div className="flex gap-2 mb-2.5">
                 <div className="flex-1">
                   <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
@@ -3300,12 +3373,12 @@ export default function App() {
                     setFSemViagem(v);
                     if (v) { setFKmIni(null); setFKmFin(null); }
                   }} />
-                Sem viagem de carro hoje (ex: fui de Uber) — só registrar observação
+                Sem viagem de carro hoje (fui de Uber etc.)
               </label>
 
               {fSemViagem ? (
                 <div className="rounded-lg px-2.5 py-2 mb-2.5" style={{ background: "#F5F7FA" }}>
-                  <span className="text-[11px] text-gray-500">Sem KM neste dia. Descreva o que foi feito na observação abaixo (obrigatório).</span>
+                  <span className="text-[11px] text-gray-500">Sem KM — descreva na observação abaixo (obrigatório).</span>
                 </div>
               ) : (
                 <>
@@ -3589,9 +3662,12 @@ export default function App() {
                         <p className="text-sm font-semibold" style={{ color: isCur ? BTJ_NAVY : "#2C2C2A" }}>
                           {agrupamento === "mes" ? monthLabelFromKey(key) : `Semana ${weekLabel(key)}`}{" "}
                           {agrupamento === "mes" && (() => {
-                            const st = statusPeriodo(key, envios, hojeKey);
+                            const st = statusRealDoPeriodo(key);
                             if (st === "aberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>⏳ aberto</span>;
-                            if (st === "enviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ enviado</span>;
+                            if (st === "concluido") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ concluído</span>;
+                            if (st === "aguardando") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⏳ aguardando aprovação</span>;
+                            if (st === "revisao") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>✎ em revisão</span>;
+                            if (st === "reenviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>↩ reenviado</span>;
                             if (st === "pendente") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⟳ envio pendente</span>;
                             if (st === "reaberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FFF7E6", color: "#854F0B" }}>🔓 reaberto pra correção</span>;
                             return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>🔓 fechado · não enviado</span>;
@@ -3606,7 +3682,13 @@ export default function App() {
                         {agrupamento === "mes" && !isCur && (
                           <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
                             className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
-                            📋 {(() => { const st = statusPeriodo(key, envios, hojeKey); return st === "enviado" ? "Ver envio / reenviar" : st === "reaberto" ? "Corrigir e reenviar" : "Revisar e enviar"; })()} ›
+                            📋 {(() => {
+                              const st = statusRealDoPeriodo(key);
+                              if (st === "concluido") return "Ver relatório";
+                              if (st === "aguardando" || st === "revisao" || st === "reenviado") return "Ver status";
+                              if (st === "reaberto") return "Corrigir e reenviar";
+                              return "Revisar e enviar";
+                            })()} ›
                           </button>
                         )}
                       </div>
