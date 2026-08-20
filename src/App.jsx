@@ -518,6 +518,7 @@ async function apiSave(record, colaborador) {
       observacao: record.observacao || "",
       colaborador,
       carro: record.carro || CARRO_PADRAO,
+      empresa: record.empresa || "",
     }),
   });
   const data = await res.json();
@@ -1044,9 +1045,10 @@ function CadastrarCarroModal({ colaborador, onSaved, onCancel }) {
   );
 }
 
-function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, travado, onNovoCarro, onSaved, onCancel }) {
+function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites, faixa, colaborador, travado, onNovoCarro, onSaved, onCancel }) {
   const [data, setData] = useState(todayISO());
   const [carro, setCarro] = useState(carroInicial);
+  const [empresa, setEmpresa] = useState(empresaInicial || (empresas && empresas[0]) || "");
   const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
   const [tipo, setTipo] = useState("Alimentação");
   const [valorDigits, setValorDigits] = useState("");
@@ -1132,6 +1134,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
         // carro selecionado na Home é irrelevante e não deve ir pra planilha
         // como se a despesa tivesse relação com aquele veículo.
         data, carro: tipo === "Pedágio" ? carro : "—", tipo, valor: valorFinal,
+        empresa,
         descricao, comprovanteImage: compB64 || undefined, origem: "manual",
         pessoasRateio: precisaRateio ? nPessoas : 1,
         rateioCom: precisaRateio ? comQuem : "",
@@ -1154,6 +1157,16 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
         <input type="date" value={data} max={todayISO()} onChange={e => setData(e.target.value)}
           className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
       </div>
+
+      {empresas && empresas.length > 1 && (
+        <div className="mb-2.5">
+          <p className="text-[11px] text-gray-500 mb-0.5">Empresa</p>
+          <select value={empresa} onChange={e => setEmpresa(e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+            {empresas.map(e => <option key={e} value={e}>{e}</option>)}
+          </select>
+        </div>
+      )}
 
       <p className="text-[11px] text-gray-500 mb-1">Tipo</p>
       <div className="flex gap-1.5 flex-wrap mb-2.5">
@@ -1295,7 +1308,7 @@ function DespesaManual({ carros, carroInicial, limites, faixa, colaborador, trav
 }
 
 // ─── Tela: Importar Extrato do Tag (pedágio/estacionamento cobrado no tag) ────
-function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, onNovoCarro, onDone, onCancel }) {
+function ImportarExtrato({ carros, carroInicial, empresas, records, colaborador, travado, onNovoCarro, onDone, onCancel }) {
   const [carro, setCarro] = useState(carroInicial);
   const [mostrarCadastroCarro, setMostrarCadastroCarro] = useState(false);
   const [passagens, setPassagens] = useState(null); // null = ainda não leu
@@ -1305,7 +1318,9 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
   const galRef = useRef(null);
 
   // Dias em que existe viagem de trabalho lançada para o carro deste extrato
-  // (usado pra pré-marcar só as passagens que batem com um dia de trabalho).
+  // (usado pra pré-marcar só as passagens que batem com um dia de trabalho),
+  // e a empresa de cada uma dessas viagens (pra herdar no pedágio do mesmo
+  // dia — carro só roda 1 viagem/dia, então a empresa nunca é ambígua aqui).
   const diasComViagem = useMemo(() => {
     const s = new Set();
     (records || []).forEach(r => {
@@ -1313,6 +1328,14 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
     });
     return s;
   }, [records, carro]);
+  const empresaPorDia = useMemo(() => {
+    const m = {};
+    (records || []).forEach(r => {
+      if ((r.carro || CARRO_PADRAO) === carro && r.empresa) m[r.data] = r.empresa;
+    });
+    return m;
+  }, [records, carro]);
+  const empresaPadrao = (empresas && empresas[0]) || "";
 
   async function lerExtrato(fileList) {
     const files = Array.from(fileList || []);
@@ -1369,6 +1392,7 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
       for (const p of marcadas) {
         await apiSaveDespesa({
           data: p.data, carro, tipo: "Pedágio",
+          empresa: empresaPorDia[p.data] || empresaPadrao,
           valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
           colaborador,
         });
@@ -1424,6 +1448,8 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
             {passagens.map((p, i) => {
               const temViagem = diasComViagem.has(p.data);
               const semViagem = !p.jaLancado && !temViagem;
+              const empresaHerdada = empresaPorDia[p.data];
+              const empresaCaiuNoPadrao = empresas && empresas.length > 1 && !empresaHerdada && empresaPadrao;
               return (
               <div key={i} className={`border-b border-gray-50 last:border-b-0 ${p.jaLancado ? "bg-red-50" : semViagem ? "bg-amber-50" : ""}`}>
                 <button onClick={() => setSel(s => ({ ...s, [i]: !s[i] }))}
@@ -1447,6 +1473,9 @@ function ImportarExtrato({ carros, carroInicial, records, colaborador, travado, 
                 )}
                 {semViagem && (
                   <p className="text-[10px] text-amber-700 px-3 pb-2 -mt-1">🚗 Não há viagem de trabalho lançada para {carro} nesse dia. Marque só se for mesmo uso de trabalho.</p>
+                )}
+                {empresaCaiuNoPadrao && (
+                  <p className="text-[10px] text-amber-700 px-3 pb-2 -mt-1">🏢 Sem viagem pra herdar a empresa — vai como {empresaPadrao} (confira antes de lançar).</p>
                 )}
               </div>
               );
@@ -2559,6 +2588,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.carros]);
 
+  // Empresa default = a de "Ordem 1" nos vínculos do colaborador. Se ele só
+  // tem uma empresa vinculada (ou nenhuma), isso já resolve sozinho e nenhum
+  // seletor precisa aparecer na tela.
+  useEffect(() => {
+    const lista = config.empresas || [];
+    if (lista.length && lista.indexOf(fEmpresa) === -1) setFEmpresa(lista[0]);
+    else if (!lista.length && fEmpresa) setFEmpresa("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.empresas]);
+
   // Atualiza o "App sincronizado há X min" a cada 30s (só quando está nesse estado)
   useEffect(() => {
     if (syncStatus !== "synced") return;
@@ -2610,6 +2649,10 @@ export default function App() {
   // "Sem viagem de carro" — dias em que houve trabalho (ex: cliente visitado
   // de Uber) mas o carro próprio não foi usado, então não há KM pra apontar.
   const [fSemViagem, setFSemViagem] = useState(false);
+  // Empresa do grupo a que este lançamento pertence (BTJ Foods/Ilha/Aqua/...).
+  // Só existe seletor se o colaborador tiver mais de um vínculo ativo — com
+  // um vínculo só, manda sozinho sem perguntar nada.
+  const [fEmpresa, setFEmpresa] = useState("");
   const [loadingIni, setLoadingIni] = useState(false);
   const [loadingFin, setLoadingFin] = useState(false);
   const [queuedIni, setQueuedIni] = useState(false);
@@ -2682,6 +2725,7 @@ export default function App() {
             data: rem.data,
             carro: rem.carro || CARRO_PADRAO,
             tipo: rem.tipo || "Viagem",
+            empresa: rem.empresa || "",
             origem: rem.origem,
             destino: rem.destino,
             kmInicial: rem.kmInicial,
@@ -2717,6 +2761,7 @@ export default function App() {
       setFObs(rec.observacao || "");
       setFOrigemGps(false);
       setFSemViagem(rec.tipo === "Sem viagem");
+      if (rec.empresa) setFEmpresa(rec.empresa);
     } else if (!rec && editingId !== null) {
       setEditingId(null);
       setFOrigem(""); setFDestino(""); setFKmIni(null); setFKmFin(null); setFObs("");
@@ -2927,6 +2972,7 @@ export default function App() {
       data: fData,
       carro: fCarro,
       tipo: fSemViagem ? "Sem viagem" : "Viagem",
+      empresa: fEmpresa,
       origem: fOrigem,
       destino: fDestino,
       kmInicial: fSemViagem ? null : fKmIni,
@@ -3201,6 +3247,16 @@ export default function App() {
                   />
                 )}
               </div>
+
+              {(config.empresas || []).length > 1 && (
+                <div className="mb-2.5">
+                  <p className="text-[11px] text-gray-500 mb-0.5">Empresa</p>
+                  <select value={fEmpresa} onChange={e => setFEmpresa(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+                    {config.empresas.map(e => <option key={e} value={e}>{e}</option>)}
+                  </select>
+                </div>
+              )}
               <div className="flex gap-2 mb-2.5">
                 <div className="flex-1">
                   <p className="text-[11px] text-gray-500 mb-0.5">Data</p>
@@ -3451,6 +3507,8 @@ export default function App() {
           <DespesaManual
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
+            empresas={config.empresas || []}
+            empresaInicial={fEmpresa}
             limites={config.limites || DEFAULT_CONFIG.limites}
             faixa={faixaDoColaborador(config.colaboradores || DEFAULT_CONFIG.colaboradores, usuario.nome)}
             colaborador={usuario.email}
@@ -3466,6 +3524,7 @@ export default function App() {
           <ImportarExtrato
             carros={config.carros || DEFAULT_CONFIG.carros}
             carroInicial={fCarro}
+            empresas={config.empresas || []}
             records={records}
             colaborador={usuario.email}
             travado={periodoTravado}
