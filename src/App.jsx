@@ -822,6 +822,14 @@ function isOpen(r) {
   if (r.tipo === "Sem viagem") return false;
   return r.kmInicial == null || r.kmFinal == null;
 }
+// "Pendência de verdade" pra fins de alerta/aviso: um dia incompleto só vira
+// pendência depois que ELE JÁ VIROU — o dia de hoje ainda pode ser
+// completado até o fim do dia, então não é motivo de alarme ainda (isOpen()
+// sozinho continua servindo pros cálculos/coerência, que precisam saber que
+// falta km independente da data).
+function isPendenteDeVerdade(r) {
+  return isOpen(r) && r.data !== todayISO();
+}
 function monthSummary(records, key, taxas, colaboradores, solicitante, despesas, keyFn) {
   const agrupa = keyFn || periodKey;
   const recs = records.filter(r => agrupa(r.data) === key).sort((a, b) => a.data.localeCompare(b.data));
@@ -2574,9 +2582,15 @@ export default function App() {
   }
 
   // Período travado = já fechado e enviado (ou fechado aguardando envio offline)
+  // Trava com base no status REAL (backend + local), não só no que o
+  // aparelho lembrava. Sem isso, um período já "concluído" no backend (ex:
+  // aprovado pelo dashboard, sem o app local saber) continuava aceitando
+  // edição de km/despesa até o momento de salvar — o backend já rejeita
+  // (periodoBloqueadoParaEdicao_ no Dashboard.gs), mas a tela só avisava
+  // depois da tentativa, não antes.
   function periodoTravado(dataISO) {
-    const st = statusPeriodo(periodKey(dataISO), envios, hojeKey);
-    return st === "enviado" || st === "pendente";
+    const st = statusRealDoPeriodo(periodKey(dataISO));
+    return st === "concluido" || st === "aguardando" || st === "revisao" || st === "reenviado" || st === "pendente";
   }
 
   // Re-tenta envios pendentes quando a conexão volta
@@ -3068,7 +3082,7 @@ export default function App() {
   }
 
   // ── Derivados ──
-  const openDays = records.filter(isOpen).sort((a, b) => b.data.localeCompare(a.data));
+  const openDays = records.filter(isPendenteDeVerdade).sort((a, b) => b.data.localeCompare(a.data));
   const curKey = periodKey(todayISO());
   const cur = monthSummary(records, curKey, config.taxas, config.colaboradores, usuario.nome, despesas);
   const todayRec = records.find(r => r.data === todayISO());
@@ -3696,7 +3710,7 @@ export default function App() {
                         </p>
                         {agrupamento === "mes" && (
                           <p className="text-[9px] mt-0.5" style={{ color: "#B0AEA6" }}>
-                            DEBUG · local={JSON.stringify(statusPeriodo(key, envios, hojeKey))} · backend={JSON.stringify(statusBackend[key] || null)}
+                            DEBUG · usuario={JSON.stringify(usuario.email)} · local={JSON.stringify(statusPeriodo(key, envios, hojeKey))} · backend={JSON.stringify(statusBackend[key] || null)}
                           </p>
                         )}
                         {agrupamento === "mes" && !isCur && (
@@ -3777,7 +3791,7 @@ export default function App() {
                               </div>
                             ) : (
                               <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
-                                {isOpen(r) ? (
+                                {isPendenteDeVerdade(r) ? (
                                   <>
                                     <span className="text-xs" style={{ color: "#D85A30" }}>
                                       ⚠ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
