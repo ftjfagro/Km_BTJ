@@ -3271,18 +3271,26 @@ export default function App() {
         {/* ═══ TELA PRINCIPAL ═══ */}
         {screen === "home" && (
           <>
-            {/* Aviso: ciclo anterior fechou e ainda não foi enviado */}
+            {/* Aviso: ciclo anterior fechou e ainda não foi enviado — usa o
+                status REAL (backend+local), não só o controle do aparelho.
+                Sem isso, esse banner ficava preso pra sempre se o envio/
+                aprovação tivesse acontecido por outro caminho (dashboard,
+                outro aparelho) sem o local "envios" saber. */}
             {(() => {
-              const st = statusPeriodo(perAnterior, envios, hojeKey);
+              const stReal = statusRealDoPeriodo(perAnterior);
+              const mostrar = stReal === "atrasado" || stReal === "pendente" || stReal === "reaberto";
+              if (!mostrar) return null;
               const temDados = records.some(r => periodKey(r.data) === perAnterior) || despesas.some(d => periodKey(d.data) === perAnterior);
-              if (st === "enviado" || !temDados) return null;
+              if (!temDados) return null;
               return (
                 <button onClick={() => { setRevisaoPeriodo(perAnterior); setScreen("revisao"); }}
                   className="w-full mt-2.5 flex items-center justify-between rounded-lg px-3 py-2.5 text-left"
                   style={{ background: "#E6F1FB", borderLeft: "3px solid #1A9BE0" }}>
                   <span className="text-xs" style={{ color: "#0C447C" }}>
-                    {st === "pendente"
+                    {stReal === "pendente"
                       ? <>⟳ O relatório de <b>{periodLabel(perAnterior)}</b> está fechado — envio pendente de conexão</>
+                      : stReal === "reaberto"
+                      ? <>🔓 O período <b>{periodLabel(perAnterior)}</b> foi reaberto — corrija e reenvie o relatório</>
                       : <>📋 O ciclo de <b>{periodLabel(perAnterior)}</b> fechou dia 25 — revise e envie o relatório de reembolso</>}
                   </span>
                   <span className="text-xs font-semibold shrink-0 ml-2" style={{ color: "#1A9BE0" }}>Revisar ›</span>
