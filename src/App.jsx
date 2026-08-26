@@ -1454,8 +1454,9 @@ function ImportarExtrato({ carros, carroInicial, empresas, records, colaborador,
         <>
           <p className="text-xs text-gray-500 mb-2">Mande o(s) print(s) do extrato do tag (C6, Veloe, Sem Parar etc.) — pode selecionar várias fotos de uma vez da galeria. Cobre pedágio e outras cobranças do tag (ex: estacionamento).</p>
           <button onClick={() => galRef.current?.click()} disabled={loading}
-            className="w-full rounded-lg py-2.5 text-sm bg-amber-400">
-            {loading ? "⟳ lendo..." : "🖼️ Escolher fotos da galeria (várias)"}
+            className="w-full rounded-lg py-2.5 text-sm bg-amber-400 flex items-center justify-center gap-2 disabled:opacity-80">
+            {loading && <span className="inline-block w-4 h-4 border-2 border-gray-700 border-t-transparent rounded-full animate-spin" />}
+            {loading ? "Lendo o extrato..." : "🖼️ Escolher fotos da galeria (várias)"}
           </button>
           <input ref={galRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { lerExtrato(e.target.files); e.target.value = ""; }} />
         </>
@@ -1510,8 +1511,9 @@ function ImportarExtrato({ carros, carroInicial, empresas, records, colaborador,
           </div>
           <div className="flex gap-2">
             <button onClick={lancar} disabled={saving || qtdSel === 0}
-              className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+              className="flex-[2] rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-60 flex items-center justify-center gap-2"
               style={{ background: BTJ_BLUE }}>
+              {saving && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {saving ? "Lançando..." : `Lançar ${qtdSel} lançamento(s)`}
             </button>
             <button onClick={onCancel} className="flex-1 rounded-xl py-2.5 text-sm text-gray-600 border border-gray-200">Cancelar</button>
@@ -2554,6 +2556,14 @@ export default function App() {
   const updateSWRef = useRef(null);
   const [showPending, setShowPending] = useState(false);
   const [expandedMonth, setExpandedMonth] = useState(periodKey(todayISO()));
+  // Histórico de 2 anos: anos que o usuário recolheu/expandiu manualmente
+  // (sobrepõe o padrão automático — só abre sozinho o ano que tem pendência).
+  const [anosFechados, setAnosFechados] = useState({});
+  // Detalhe dia-a-dia de meses ANTIGOS (fora do cache local do aparelho),
+  // buscado sob demanda quando o mês é expandido — não carrega tudo de uma
+  // vez. Valores: undefined (nunca pedido), "carregando", "erro", ou
+  // { viagens, despesas }.
+  const [detalhesAntigos, setDetalhesAntigos] = useState({});
   const [menuAberto, setMenuAberto] = useState(false);
   const [pedagioAberto, setPedagioAberto] = useState(null); // data (iso) do dia com pedágios expandidos
   const [inlineEdit, setInlineEdit] = useState(null); // { id, kmIni, kmFin, obs, err }
@@ -2666,6 +2676,19 @@ export default function App() {
   // "fechado · não enviado" pra sempre, mesmo já concluído de verdade.
   // Refaz sempre que a tela muda, então abrir Resumos já chega atualizado.
   const [statusBackend, setStatusBackend] = useState({});
+  // Busca sob demanda o dia-a-dia de um mês FORA do cache local (histórico
+  // antigo) — só dispara na primeira vez que aquele mês é expandido, nunca
+  // carrega os 2 anos inteiros de uma vez.
+  function carregarDetalheAntigo(periodo) {
+    if (detalhesAntigos[periodo]) return; // já carregado, carregando, ou já deu erro (não refaz sozinho)
+    setDetalhesAntigos(prev => ({ ...prev, [periodo]: "carregando" }));
+    apiDetalheRelatorio(usuario.email, usuario.email, periodo).then(d => {
+      setDetalhesAntigos(prev => ({ ...prev, [periodo]: { viagens: d.viagens || [], despesas: d.despesas || [] } }));
+    }).catch(() => {
+      setDetalhesAntigos(prev => ({ ...prev, [periodo]: "erro" }));
+    });
+  }
+
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   function refreshStatusBackend() {
     if (!usuario || !navigator.onLine) return Promise.resolve();
@@ -2682,7 +2705,9 @@ export default function App() {
       const meuEmail = String(usuario.email || "").toLowerCase();
       (d.relatorios || []).forEach(r => {
         if (String(r.colaborador || "").toLowerCase() !== meuEmail) return;
-        mapa[r.periodo] = { status: r.status, rodada: r.rodada };
+        // Guarda também os totais — usados pra mostrar o resumo de meses
+        // antigos (fora do cache local) sem precisar de uma segunda chamada.
+        mapa[r.periodo] = { status: r.status, rodada: r.rodada, km: r.km, reembolso: r.reembolso, despesas: r.despesas, total: r.total };
       });
       setStatusBackend(mapa);
     }).catch(() => {}).finally(() => setStatusRefreshing(false));
@@ -3099,10 +3124,40 @@ export default function App() {
   const todayRec = records.find(r => r.data === todayISO());
   const kmHoje = todayRec ? kmOf(todayRec) : 0;
 
-  const monthKeys = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse().slice(0, 4);
+  // Todos os meses com dado no aparelho (sem cortar) — usado pra saber quais
+  // meses do histórico já podem ser mostrados com o detalhe editável de
+  // sempre, sem precisar buscar do servidor.
+  const monthKeysAll = [...new Set(records.map(r => periodKey(r.data)))].sort().reverse();
+  const monthKeys = monthKeysAll.slice(0, 4);
   const weekKeys = [...new Set(records.map(r => weekKey(r.data)))].sort().reverse();
   const groupKeys = agrupamento === "mes" ? monthKeys : weekKeys;
   const curGroupKey = agrupamento === "mes" ? periodKey(todayISO()) : weekKey(todayISO());
+
+  // ── Histórico de 2 anos, agrupado por ano ── Une o que já está salvo no
+  // aparelho com o que o backend conhece (listarRelatorios, já buscado pro
+  // status) — assim aparece mesmo período que nunca foi sincronizado neste
+  // aparelho específico. Cada ano só abre sozinho se tiver alguma pendência
+  // de verdade; senão fica recolhido, mesmo sendo o ano atual.
+  const doisAnosAtras = String(Number(hojeKey.slice(0, 4)) - 2);
+  const periodosHistorico = [...new Set([...Object.keys(statusBackend), ...monthKeysAll])]
+    .filter(p => p.slice(0, 4) >= doisAnosAtras)
+    .sort().reverse();
+  const anosAgrupados = (() => {
+    const mapa = {};
+    periodosHistorico.forEach(p => {
+      const ano = p.slice(0, 4);
+      if (!mapa[ano]) mapa[ano] = { ano, periodos: [], total: 0 };
+      const g = mapa[ano];
+      g.periodos.push(p);
+      const back = statusBackend[p];
+      if (back) g.total += back.total || 0;
+    });
+    return Object.values(mapa).sort((a, b) => a.ano < b.ano ? 1 : -1);
+  })();
+  const ANO_PRECISA_ACAO_ = ["atrasado", "pendente", "reaberto", "revisao"];
+  function anoTemPendencia(g) {
+    return g.periodos.some(p => ANO_PRECISA_ACAO_.indexOf(statusRealDoPeriodo(p)) !== -1);
+  }
   const destinos = config.destinos || DEFAULT_CONFIG.destinos;
   // Últimos lugares usados (mais recente primeiro), sem duplicar as unidades do grupo.
   const recentesLugares = useMemo(() => {
@@ -3693,175 +3748,402 @@ export default function App() {
                 </div>
               </div>
 
-              {groupKeys.length === 0 && (
-                <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
-              )}
-              {groupKeys.map(key => {
-                const s = monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas, agrupamento === "mes" ? periodKey : weekKey);
-                const isCur = key === curGroupKey;
-                const opened = expandedMonth === key;
-                return (
-                  <div key={key} className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-                    <button
-                      onClick={() => setExpandedMonth(opened ? null : key)}
-                      className="w-full flex items-center justify-between px-3.5 py-3 text-left"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold" style={{ color: isCur ? BTJ_NAVY : "#2C2C2A" }}>
-                          {agrupamento === "mes" ? monthLabelFromKey(key) : `Semana ${weekLabel(key)}`}{" "}
-                          {agrupamento === "mes" && (() => {
-                            const st = statusRealDoPeriodo(key);
-                            if (st === "aberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>⏳ aberto</span>;
-                            if (st === "concluido") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ concluído</span>;
-                            if (st === "aguardando") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⏳ aguardando aprovação</span>;
-                            if (st === "revisao") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>✎ em revisão</span>;
-                            if (st === "reenviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>↩ reenviado</span>;
-                            if (st === "pendente") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⟳ envio pendente</span>;
-                            if (st === "reaberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FFF7E6", color: "#854F0B" }}>🔓 reaberto pra correção</span>;
-                            return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>🔓 fechado · não enviado</span>;
-                          })()}
-                          {agrupamento === "semana" && isCur && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>atual</span>}
-                        </p>
-                        <p className="text-[11px] text-gray-400">
-                          {s.viagens} viagens · {s.trabalho.toLocaleString("pt-BR")} km
-                          {s.pessoal != null && ` · pessoal ${s.pessoal.toLocaleString("pt-BR")} km`}
-                          {" · "}R$ {s.receber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                        </p>
-                        {agrupamento === "mes" && !isCur && (
-                          <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
-                            className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
-                            📋 {(() => {
-                              const st = statusRealDoPeriodo(key);
-                              if (st === "concluido") return "Ver relatório";
-                              if (st === "aguardando" || st === "revisao" || st === "reenviado") return "Ver status";
-                              if (st === "reaberto") return "Corrigir e reenviar";
-                              return "Revisar e enviar";
-                            })()} ›
-                          </button>
-                        )}
-                      </div>
-                      <span className="text-gray-400 text-xs">{opened ? "▲" : "▼"}</span>
-                    </button>
-                    {opened && (
-                      <div className="border-t border-gray-100">
-                        {[...s.recs].reverse().map(r => (
-                          <div key={r.id} className="border-b border-gray-50 last:border-b-0">
-                            {inlineEdit?.id === r.id ? (
-                              <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
-                                <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
-                                  Editando {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
-                                </p>
-                                <div className="flex gap-1.5 mb-2">
-                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
-                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM inicial</p>
-                                    <input type="number" inputMode="numeric" value={inlineEdit.kmIni ?? ""} placeholder="—"
-                                      onChange={e => changeInline({ kmIni: e.target.value === "" ? null : Number(e.target.value) })}
+              {agrupamento === "semana" ? (
+                <>
+                  {groupKeys.length === 0 && (
+                    <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
+                  )}
+                  {groupKeys.map(key => {
+                    const s = monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas, weekKey);
+                    const isCur = key === curGroupKey;
+                    const opened = expandedMonth === key;
+                    return (
+                      <div key={key} className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+                        <button
+                          onClick={() => setExpandedMonth(opened ? null : key)}
+                          className="w-full flex items-center justify-between px-3.5 py-3 text-left"
+                        >
+                          <div>
+                            <p className="text-sm font-semibold" style={{ color: isCur ? BTJ_NAVY : "#2C2C2A" }}>
+                              {`Semana ${weekLabel(key)}`}{" "}
+                              {isCur && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>atual</span>}
+                            </p>
+                            <p className="text-[11px] text-gray-400">
+                              {s.viagens} viagens · {s.trabalho.toLocaleString("pt-BR")} km
+                              {s.pessoal != null && ` · pessoal ${s.pessoal.toLocaleString("pt-BR")} km`}
+                              {" · "}R$ {s.receber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                            </p>
+                          </div>
+                          <span className="text-gray-400 text-xs">{opened ? "▲" : "▼"}</span>
+                        </button>
+                        {opened && (
+                          <div className="border-t border-gray-100">
+                            {[...s.recs].reverse().map(r => (
+                              <div key={r.id} className="border-b border-gray-50 last:border-b-0">
+                                {inlineEdit?.id === r.id ? (
+                                  <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
+                                    <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
+                                      Editando {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
+                                    </p>
+                                    <div className="flex gap-1.5 mb-2">
+                                      <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                        <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM inicial</p>
+                                        <input type="number" inputMode="numeric" value={inlineEdit.kmIni ?? ""} placeholder="—"
+                                          onChange={e => changeInline({ kmIni: e.target.value === "" ? null : Number(e.target.value) })}
+                                          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                          className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                      </div>
+                                      <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "fin" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                        <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM final</p>
+                                        <input type="number" inputMode="numeric" value={inlineEdit.kmFin ?? ""} placeholder="—"
+                                          onChange={e => changeInline({ kmFin: e.target.value === "" ? null : Number(e.target.value) })}
+                                          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                          className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                      </div>
+                                    </div>
+                                    {inlineEdit.err && <p className="text-[10px] mb-2" style={{ color: "#C62A2F" }}>⛔ {inlineEdit.err.msg}</p>}
+                                    <input type="text" value={inlineEdit.obs} placeholder="observação..."
+                                      onChange={e => changeInline({ obs: e.target.value })}
                                       onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                      className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
+                                    <div className="flex gap-1.5">
+                                      <button onClick={saveInline} disabled={!!inlineEdit.err}
+                                        className="flex-[2] rounded-lg py-2 text-xs font-medium text-white disabled:opacity-50"
+                                        style={{ background: inlineEdit.err ? "#E7E5DE" : BTJ_BLUE }}>
+                                        Salvar alterações
+                                      </button>
+                                      <button onClick={() => setInlineEdit(null)}
+                                        className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">
+                                        Cancelar
+                                      </button>
+                                    </div>
+                                    <button onClick={() => excluirDia(r)}
+                                      className="w-full rounded-lg py-1.5 text-[11px] mt-1.5 border" style={{ borderColor: "#F4C7C3", color: "#B3261E" }}>
+                                      🗑 Excluir este dia (apaga a viagem do {formatDateShort(r.data)})
+                                    </button>
                                   </div>
-                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "fin" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
-                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM final</p>
-                                    <input type="number" inputMode="numeric" value={inlineEdit.kmFin ?? ""} placeholder="—"
-                                      onChange={e => changeInline({ kmFin: e.target.value === "" ? null : Number(e.target.value) })}
-                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
-                                  </div>
-                                </div>
-                                {inlineEdit.err && <p className="text-[10px] mb-2" style={{ color: "#C62A2F" }}>⛔ {inlineEdit.err.msg}</p>}
-                                <input type="text" value={inlineEdit.obs} placeholder="observação..."
-                                  onChange={e => changeInline({ obs: e.target.value })}
-                                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
-                                <div className="flex gap-1.5">
-                                  <button onClick={saveInline} disabled={!!inlineEdit.err}
-                                    className="flex-[2] rounded-lg py-2 text-xs font-medium text-white disabled:opacity-50"
-                                    style={{ background: inlineEdit.err ? "#E7E5DE" : BTJ_BLUE }}>
-                                    Salvar alterações
-                                  </button>
-                                  <button onClick={() => setInlineEdit(null)}
-                                    className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">
-                                    Cancelar
-                                  </button>
-                                </div>
-                                <button onClick={() => excluirDia(r)}
-                                  className="w-full rounded-lg py-1.5 text-[11px] mt-1.5 border" style={{ borderColor: "#F4C7C3", color: "#B3261E" }}>
-                                  🗑 Excluir este dia (apaga a viagem do {formatDateShort(r.data)})
-                                </button>
-                              </div>
-                            ) : r.tipo === "Sem viagem" ? (
-                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
-                                <span className="text-xs text-gray-600">
-                                  🅿️ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem de carro
-                                  {r.observacao ? <span className="text-gray-400"> · {r.observacao}</span> : null}
-                                </span>
-                                <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>✎</span>
-                              </button>
-                            ) : r.soPedagio ? (
-                              <div className="w-full flex items-center justify-between px-3.5 py-2">
-                                <span className="text-xs text-gray-400">{formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem registrada</span>
-                                <span className="text-xs font-medium" style={{ color: "#854F0B" }}>
-                                  🛣️ R$ {(s.pedagioPorDia[r.data] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
-                                </span>
-                              </div>
-                            ) : (
-                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
-                                {isPendenteDeVerdade(r) ? (
-                                  <>
-                                    <span className="text-xs" style={{ color: "#D85A30" }}>
-                                      ⚠ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                ) : r.tipo === "Sem viagem" ? (
+                                  <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                    <span className="text-xs text-gray-600">
+                                      🅿️ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem de carro
+                                      {r.observacao ? <span className="text-gray-400"> · {r.observacao}</span> : null}
                                     </span>
-                                    <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
-                                  </>
+                                    <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>✎</span>
+                                  </button>
+                                ) : r.soPedagio ? (
+                                  <div className="w-full flex items-center justify-between px-3.5 py-2">
+                                    <span className="text-xs text-gray-400">{formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem registrada</span>
+                                    <span className="text-xs font-medium" style={{ color: "#854F0B" }}>
+                                      🛣️ R$ {(s.pedagioPorDia[r.data] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
+                                    </span>
+                                  </div>
                                 ) : (
-                                  <div className="w-full">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-xs text-gray-700 font-medium">
-                                        {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
-                                      </span>
-                                      <span className="text-xs text-gray-600 font-medium">
-                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center justify-between mt-0.5 gap-2">
-                                      <span className="text-[10px] text-gray-400 truncate">
-                                        🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial?.toLocaleString("pt-BR") ?? "—"} → {r.kmFinal?.toLocaleString("pt-BR") ?? "—"}
-                                      </span>
-                                      {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[35%] shrink-0">{r.observacao}</span>}
-                                    </div>
-                                    {(s.pedagioItensPorDia[r.data] || []).length > 0 && (
-                                      <div className="mt-1">
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setPedagioAberto(pedagioAberto === r.data ? null : r.data); }}
-                                          className="flex items-center gap-1"
-                                        >
-                                          <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
-                                            🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} · {s.pedagioItensPorDia[r.data].length} passage{s.pedagioItensPorDia[r.data].length > 1 ? "ns" : "m"}
+                                  <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                    {isPendenteDeVerdade(r) ? (
+                                      <>
+                                        <span className="text-xs" style={{ color: "#D85A30" }}>
+                                          ⚠ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                        </span>
+                                        <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
+                                      </>
+                                    ) : (
+                                      <div className="w-full">
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-xs text-gray-700 font-medium">
+                                            {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
                                           </span>
-                                          <span className="text-[9px]" style={{ color: "#854F0B" }}>{pedagioAberto === r.data ? "▲" : "▼"}</span>
-                                        </button>
-                                        {pedagioAberto === r.data && (
-                                          <div className="mt-1 ml-1 pl-2 space-y-0.5" style={{ borderLeft: "2px solid #F5C97A" }}>
-                                            {s.pedagioItensPorDia[r.data].map((p, i) => (
-                                              <div key={i} className="flex items-center justify-between">
-                                                <span className="text-[10px] text-gray-500">{p.local}</span>
-                                                <span className="text-[10px] text-gray-500">R$ {p.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                          <span className="text-xs text-gray-600 font-medium">
+                                            {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center justify-between mt-0.5 gap-2">
+                                          <span className="text-[10px] text-gray-400 truncate">
+                                            🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial?.toLocaleString("pt-BR") ?? "—"} → {r.kmFinal?.toLocaleString("pt-BR") ?? "—"}
+                                          </span>
+                                          {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[35%] shrink-0">{r.observacao}</span>}
+                                        </div>
+                                        {(s.pedagioItensPorDia[r.data] || []).length > 0 && (
+                                          <div className="mt-1">
+                                            <button
+                                              onClick={(e) => { e.stopPropagation(); setPedagioAberto(pedagioAberto === r.data ? null : r.data); }}
+                                              className="flex items-center gap-1"
+                                            >
+                                              <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
+                                                🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} · {s.pedagioItensPorDia[r.data].length} passage{s.pedagioItensPorDia[r.data].length > 1 ? "ns" : "m"}
+                                              </span>
+                                              <span className="text-[9px]" style={{ color: "#854F0B" }}>{pedagioAberto === r.data ? "▲" : "▼"}</span>
+                                            </button>
+                                            {pedagioAberto === r.data && (
+                                              <div className="mt-1 ml-1 pl-2 space-y-0.5" style={{ borderLeft: "2px solid #F5C97A" }}>
+                                                {s.pedagioItensPorDia[r.data].map((p, i) => (
+                                                  <div key={i} className="flex items-center justify-between">
+                                                    <span className="text-[10px] text-gray-500">{p.local}</span>
+                                                    <span className="text-[10px] text-gray-500">R$ {p.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                                  </div>
+                                                ))}
                                               </div>
-                                            ))}
+                                            )}
                                           </div>
                                         )}
                                       </div>
                                     )}
-                                  </div>
+                                  </button>
                                 )}
-                              </button>
-                            )}
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </>
+              ) : (
+                <>
+                  {anosAgrupados.length === 0 && (
+                    <p className="text-center text-sm text-gray-400 mt-6">Nenhum apontamento ainda.</p>
+                  )}
+                  {anosAgrupados.map(g => {
+                    const abertoAno = g.ano in anosFechados ? !anosFechados[g.ano] : anoTemPendencia(g);
+                    return (
+                      <div key={g.ano} className="mb-1">
+                        <div onClick={() => setAnosFechados(prev => ({ ...prev, [g.ano]: abertoAno }))}
+                          className="flex items-center justify-between px-1 py-2 cursor-pointer select-none">
+                          <span className="text-sm font-medium flex items-center gap-1.5" style={{ color: BTJ_NAVY }}>
+                            <span className="text-gray-400 text-xs">{abertoAno ? "▾" : "▸"}</span>
+                            {g.ano}
+                          </span>
+                          <span className="text-[11px] text-gray-400">{g.periodos.length} {g.periodos.length === 1 ? "mês" : "meses"} · R$ {g.total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        {abertoAno && (
+                          <div className="space-y-2">
+                            {g.periodos.map(key => {
+                              const isLocal = monthKeysAll.indexOf(key) !== -1;
+                              const s = isLocal ? monthSummary(records, key, config.taxas, config.colaboradores, usuario.nome, despesas, periodKey) : null;
+                              const back = statusBackend[key];
+                              const isCur = key === curGroupKey;
+                              const opened = expandedMonth === key;
+                              return (
+                                <div key={key} className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+                                  <button
+                                    onClick={() => {
+                                      const next = opened ? null : key;
+                                      setExpandedMonth(next);
+                                      if (next && !isLocal) carregarDetalheAntigo(key);
+                                    }}
+                                    className="w-full flex items-center justify-between px-3.5 py-3 text-left"
+                                  >
+                                    <div>
+                                      <p className="text-sm font-semibold" style={{ color: isCur ? BTJ_NAVY : "#2C2C2A" }}>
+                                        {monthLabelFromKey(key)}{" "}
+                                        {(() => {
+                                          const st = statusRealDoPeriodo(key);
+                                          if (st === "aberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E6F1FB", color: "#185FA5" }}>⏳ aberto</span>;
+                                          if (st === "concluido") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#E1F5EE", color: "#085041" }}>✓ concluído</span>;
+                                          if (st === "aguardando") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⏳ aguardando aprovação</span>;
+                                          if (st === "revisao") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>✎ em revisão</span>;
+                                          if (st === "reenviado") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EEEDFE", color: "#3C3489" }}>↩ reenviado</span>;
+                                          if (st === "pendente") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>⟳ envio pendente</span>;
+                                          if (st === "reaberto") return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FFF7E6", color: "#854F0B" }}>🔓 reaberto pra correção</span>;
+                                          return <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#FEF3E2", color: "#854F0B" }}>🔓 fechado · não enviado</span>;
+                                        })()}
+                                      </p>
+                                      <p className="text-[11px] text-gray-400">
+                                        {isLocal ? (
+                                          <>
+                                            {s.viagens} viagens · {s.trabalho.toLocaleString("pt-BR")} km
+                                            {s.pessoal != null && ` · pessoal ${s.pessoal.toLocaleString("pt-BR")} km`}
+                                            {" · "}R$ {s.receber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                                          </>
+                                        ) : (
+                                          <>{(back?.km || 0).toLocaleString("pt-BR")} km · R$ {(back?.total || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</>
+                                        )}
+                                      </p>
+                                      {!isCur && (
+                                        <button onClick={(e) => { e.stopPropagation(); setRevisaoPeriodo(key); setScreen("revisao"); }}
+                                          className="text-[11px] font-semibold mt-0.5" style={{ color: BTJ_BLUE }}>
+                                          📋 {(() => {
+                                            const st = statusRealDoPeriodo(key);
+                                            if (st === "concluido") return "Ver relatório";
+                                            if (st === "aguardando" || st === "revisao" || st === "reenviado") return "Ver status";
+                                            if (st === "reaberto") return "Corrigir e reenviar";
+                                            return "Revisar e enviar";
+                                          })()} ›
+                                        </button>
+                                      )}
+                                    </div>
+                                    <span className="text-gray-400 text-xs">{opened ? "▲" : "▼"}</span>
+                                  </button>
+                                  {opened && (
+                                    <div className="border-t border-gray-100">
+                                      {isLocal ? (
+                                        [...s.recs].reverse().map(r => (
+                                          <div key={r.id} className="border-b border-gray-50 last:border-b-0">
+                                            {inlineEdit?.id === r.id ? (
+                                              <div className="px-3.5 py-3" style={{ background: "#F8FAFC" }}>
+                                                <p className="text-[11px] font-medium mb-2" style={{ color: "#185FA5" }}>
+                                                  Editando {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]}{r.destino ? ` · ${r.origem || "?"} → ${r.destino}` : ""}
+                                                </p>
+                                                <div className="flex gap-1.5 mb-2">
+                                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "ini" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM inicial</p>
+                                                    <input type="number" inputMode="numeric" value={inlineEdit.kmIni ?? ""} placeholder="—"
+                                                      onChange={e => changeInline({ kmIni: e.target.value === "" ? null : Number(e.target.value) })}
+                                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                                  </div>
+                                                  <div className={`flex-1 rounded-lg p-1.5 text-center ${inlineEdit.err?.field === "fin" ? "border-2 border-red-500" : ""}`} style={{ background: "#E1F5EE" }}>
+                                                    <p className="text-[9px]" style={{ color: "#0F6E56" }}>KM final</p>
+                                                    <input type="number" inputMode="numeric" value={inlineEdit.kmFin ?? ""} placeholder="—"
+                                                      onChange={e => changeInline({ kmFin: e.target.value === "" ? null : Number(e.target.value) })}
+                                                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                                      className="w-full bg-transparent text-center text-sm font-semibold focus:outline-none" style={{ color: "#04342C" }} />
+                                                  </div>
+                                                </div>
+                                                {inlineEdit.err && <p className="text-[10px] mb-2" style={{ color: "#C62A2F" }}>⛔ {inlineEdit.err.msg}</p>}
+                                                <input type="text" value={inlineEdit.obs} placeholder="observação..."
+                                                  onChange={e => changeInline({ obs: e.target.value })}
+                                                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs mb-2" />
+                                                <div className="flex gap-1.5">
+                                                  <button onClick={saveInline} disabled={!!inlineEdit.err}
+                                                    className="flex-[2] rounded-lg py-2 text-xs font-medium text-white disabled:opacity-50"
+                                                    style={{ background: inlineEdit.err ? "#E7E5DE" : BTJ_BLUE }}>
+                                                    Salvar alterações
+                                                  </button>
+                                                  <button onClick={() => setInlineEdit(null)}
+                                                    className="flex-1 rounded-lg py-2 text-xs text-gray-600 border border-gray-200">
+                                                    Cancelar
+                                                  </button>
+                                                </div>
+                                                <button onClick={() => excluirDia(r)}
+                                                  className="w-full rounded-lg py-1.5 text-[11px] mt-1.5 border" style={{ borderColor: "#F4C7C3", color: "#B3261E" }}>
+                                                  🗑 Excluir este dia (apaga a viagem do {formatDateShort(r.data)})
+                                                </button>
+                                              </div>
+                                            ) : r.tipo === "Sem viagem" ? (
+                                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                                <span className="text-xs text-gray-600">
+                                                  🅿️ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem de carro
+                                                  {r.observacao ? <span className="text-gray-400"> · {r.observacao}</span> : null}
+                                                </span>
+                                                <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>✎</span>
+                                              </button>
+                                            ) : r.soPedagio ? (
+                                              <div className="w-full flex items-center justify-between px-3.5 py-2">
+                                                <span className="text-xs text-gray-400">{formatDateShort(r.data)} · {weekdayAbrev(r.data)} · sem viagem registrada</span>
+                                                <span className="text-xs font-medium" style={{ color: "#854F0B" }}>
+                                                  🛣️ R$ {(s.pedagioPorDia[r.data] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} de pedágio
+                                                </span>
+                                              </div>
+                                            ) : (
+                                              <button onClick={() => openInline(r)} className="w-full flex items-center justify-between px-3.5 py-2 text-left">
+                                                {isPendenteDeVerdade(r) ? (
+                                                  <>
+                                                    <span className="text-xs" style={{ color: "#D85A30" }}>
+                                                      ⚠ {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial == null ? "KM inicial pendente" : "KM final pendente"}
+                                                    </span>
+                                                    <span className="text-xs font-medium" style={{ color: BTJ_BLUE }}>completar</span>
+                                                  </>
+                                                ) : (
+                                                  <div className="w-full">
+                                                    <div className="flex items-center justify-between">
+                                                      <span className="text-xs text-gray-700 font-medium">
+                                                        {formatDateShort(r.data)} · {weekdayAbrev(r.data)} · {r.origem || "?"}{r.destino ? ` → ${r.destino}` : ""}
+                                                      </span>
+                                                      <span className="text-xs text-gray-600 font-medium">
+                                                        {kmOf(r).toLocaleString("pt-BR")} km · R$ {(kmOf(r) * taxaVigente(config.taxas, config.colaboradores, usuario.nome, r.data)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} ✎
+                                                      </span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between mt-0.5 gap-2">
+                                                      <span className="text-[10px] text-gray-400 truncate">
+                                                        🚗 {(r.carro || CARRO_PADRAO).split(" ")[0]} · {r.kmInicial?.toLocaleString("pt-BR") ?? "—"} → {r.kmFinal?.toLocaleString("pt-BR") ?? "—"}
+                                                      </span>
+                                                      {r.observacao && <span className="text-[10px] text-gray-400 truncate ml-2 max-w-[35%] shrink-0">{r.observacao}</span>}
+                                                    </div>
+                                                    {(s.pedagioItensPorDia[r.data] || []).length > 0 && (
+                                                      <div className="mt-1">
+                                                        <button
+                                                          onClick={(e) => { e.stopPropagation(); setPedagioAberto(pedagioAberto === r.data ? null : r.data); }}
+                                                          className="flex items-center gap-1"
+                                                        >
+                                                          <span className="text-[11px] font-medium" style={{ color: "#854F0B" }}>
+                                                            🛣️ R$ {s.pedagioPorDia[r.data].toLocaleString("pt-BR", { minimumFractionDigits: 2 })} · {s.pedagioItensPorDia[r.data].length} passage{s.pedagioItensPorDia[r.data].length > 1 ? "ns" : "m"}
+                                                          </span>
+                                                          <span className="text-[9px]" style={{ color: "#854F0B" }}>{pedagioAberto === r.data ? "▲" : "▼"}</span>
+                                                        </button>
+                                                        {pedagioAberto === r.data && (
+                                                          <div className="mt-1 ml-1 pl-2 space-y-0.5" style={{ borderLeft: "2px solid #F5C97A" }}>
+                                                            {s.pedagioItensPorDia[r.data].map((p, i) => (
+                                                              <div key={i} className="flex items-center justify-between">
+                                                                <span className="text-[10px] text-gray-500">{p.local}</span>
+                                                                <span className="text-[10px] text-gray-500">R$ {p.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </button>
+                                            )}
+                                          </div>
+                                        ))
+                                      ) : (() => {
+                                        const det = detalhesAntigos[key];
+                                        if (det === "carregando" || det === undefined) {
+                                          return (
+                                            <div className="py-6 flex flex-col items-center gap-2">
+                                              <span className="inline-block w-4 h-4 border-2 border-gray-300 rounded-full animate-spin" style={{ borderTopColor: "#9C9C96" }} />
+                                              <span className="text-xs text-gray-400">Carregando os dias de {monthLabelFromKey(key).toLowerCase()}…</span>
+                                            </div>
+                                          );
+                                        }
+                                        if (det === "erro") {
+                                          return (
+                                            <div className="py-4 text-center">
+                                              <p className="text-xs mb-1.5" style={{ color: "#C62A2F" }}>Não consegui carregar este mês.</p>
+                                              <button onClick={() => { setDetalhesAntigos(prev => { const n = { ...prev }; delete n[key]; return n; }); carregarDetalheAntigo(key); }}
+                                                className="text-xs underline" style={{ color: BTJ_BLUE }}>Tentar de novo</button>
+                                            </div>
+                                          );
+                                        }
+                                        const dias = [...new Set([...det.viagens.map(v => v.data), ...det.despesas.map(d => d.data)])].sort();
+                                        if (!dias.length) return <p className="text-xs text-gray-400 text-center py-4">Sem lançamentos neste período.</p>;
+                                        return dias.map(dia => {
+                                          const viagensDia = det.viagens.filter(v => v.data === dia);
+                                          const despesasDia = det.despesas.filter(d => d.data === dia);
+                                          return (
+                                            <div key={dia} className="px-3.5 py-2 border-b border-gray-50 last:border-b-0">
+                                              <p className="text-[11px] font-medium text-gray-500 mb-0.5">{formatDateShort(dia)} · {weekdayAbrev(dia)}</p>
+                                              {viagensDia.map((v, i) => (
+                                                <div key={"v" + i} className="flex justify-between items-baseline text-xs text-gray-700">
+                                                  <span className="truncate">🚗 {v.origem || "?"} → {v.destino || "?"}</span>
+                                                  <span className="shrink-0 ml-2">{(v.km || 0).toLocaleString("pt-BR")} km · R$ {(v.reembolso || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                                </div>
+                                              ))}
+                                              {despesasDia.map((d, i) => (
+                                                <div key={"d" + i} className="flex justify-between items-baseline text-xs text-gray-500">
+                                                  <span className="truncate">{(d.tipo || "").toLowerCase().indexOf("ped") === 0 ? "🛣️" : "💳"} {d.tipo}{d.descricao ? ` · ${d.descricao}` : ""}</span>
+                                                  <span className="shrink-0 ml-2">R$ {(d.valor || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          );
+                                        });
+                                      })()}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
           </>
         )}
