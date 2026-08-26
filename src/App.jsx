@@ -1799,14 +1799,30 @@ function arquivoParaAssinatura(file) {
       const esc = Math.min(600 / img.width, 180 / img.height);
       const w = img.width * esc, h = img.height * esc;
       ctx.drawImage(img, (600 - w) / 2, (180 - h) / 2, w, h);
-      // Papel some, traço fica: pixel claro -> transparente, meio-tom -> suave
       const id = ctx.getImageData(0, 0, 600, 180);
       const px = id.data;
+      // Mede o fundo de VERDADE nos 4 cantos (praticamente certeza de ser só
+      // papel, sem tinta) em vez de assumir branco puro (255) — uma foto de
+      // assinatura no papel quase nunca tem fundo 100% branco (sombra, luz,
+      // compressão do JPEG), e assumir isso fazia boa parte do fundo cair na
+      // faixa de "meio-tom" e virar uma caixa sólida em vez de sumir.
+      const luminancia = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+      const cantos = [[4, 4], [cv.width - 5, 4], [4, cv.height - 5], [cv.width - 5, cv.height - 5]];
+      let somaFundo = 0, nFundo = 0;
+      cantos.forEach(([cx, cy]) => {
+        const ci = (cy * cv.width + cx) * 4;
+        if (px[ci + 3] === 0) return;
+        somaFundo += luminancia(px[ci], px[ci + 1], px[ci + 2]);
+        nFundo++;
+      });
+      const lumFundo = nFundo ? somaFundo / nFundo : 245;
+      const corteTransp = Math.min(lumFundo - 10, 250);
+      const corteMeio = Math.max(corteTransp - 60, 60);
       for (let i = 0; i < px.length; i += 4) {
         if (px[i + 3] === 0) continue; // já transparente (borda do enquadramento)
-        const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-        if (lum > 200) px[i + 3] = 0;
-        else if (lum > 140) px[i + 3] = Math.round(255 * (200 - lum) / 60);
+        const lum = luminancia(px[i], px[i + 1], px[i + 2]);
+        if (lum >= corteTransp) px[i + 3] = 0;
+        else if (lum >= corteMeio) px[i + 3] = Math.round(255 * (corteTransp - lum) / (corteTransp - corteMeio));
       }
       ctx.putImageData(id, 0, 0);
       URL.revokeObjectURL(url);
