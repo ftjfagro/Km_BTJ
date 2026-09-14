@@ -1801,23 +1801,31 @@ function arquivoParaAssinatura(file) {
       ctx.drawImage(img, (600 - w) / 2, (180 - h) / 2, w, h);
       const id = ctx.getImageData(0, 0, 600, 180);
       const px = id.data;
-      // Mede o fundo de VERDADE nos 4 cantos (praticamente certeza de ser só
-      // papel, sem tinta) em vez de assumir branco puro (255) — uma foto de
-      // assinatura no papel quase nunca tem fundo 100% branco (sombra, luz,
-      // compressão do JPEG), e assumir isso fazia boa parte do fundo cair na
-      // faixa de "meio-tom" e virar uma caixa sólida em vez de sumir.
+      // Mede o fundo de VERDADE ao longo de TODA A BORDA da imagem (não só 4
+      // cantos) e usa a MEDIANA — se um dos lados mostrar mesa/superfície
+      // (fora do papel), essa minoria de amostras escuras não domina a
+      // medição; a maioria (papel) continua vencendo. Os 4 cantos sozinhos
+      // falhavam quando calhavam de cair bem em cima da mesa, não do papel —
+      // foi isso que causou as barras navy nas laterais.
       const luminancia = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
-      const cantos = [[4, 4], [cv.width - 5, 4], [4, cv.height - 5], [cv.width - 5, cv.height - 5]];
-      let somaFundo = 0, nFundo = 0;
-      cantos.forEach(([cx, cy]) => {
+      const amostrasBorda = [];
+      const passo = 12;
+      for (let x = 0; x < cv.width; x += passo) { amostrasBorda.push([x, 0]); amostrasBorda.push([x, cv.height - 1]); }
+      for (let y = 0; y < cv.height; y += passo) { amostrasBorda.push([0, y]); amostrasBorda.push([cv.width - 1, y]); }
+      const lumsBorda = [];
+      amostrasBorda.forEach(([cx, cy]) => {
         const ci = (cy * cv.width + cx) * 4;
-        if (px[ci + 3] === 0) return;
-        somaFundo += luminancia(px[ci], px[ci + 1], px[ci + 2]);
-        nFundo++;
+        if (px[ci + 3] === 0) return; // borda transparente do enquadramento (letterbox), ignora
+        lumsBorda.push(luminancia(px[ci], px[ci + 1], px[ci + 2]));
       });
-      const lumFundo = nFundo ? somaFundo / nFundo : 245;
-      const corteTransp = Math.min(lumFundo - 10, 250);
-      const corteMeio = Math.max(corteTransp - 60, 60);
+      lumsBorda.sort((a, b) => a - b);
+      const lumFundo = lumsBorda.length ? lumsBorda[Math.floor(lumsBorda.length / 2)] : 245;
+      const corteTransp = Math.min(lumFundo - 8, 250);
+      // Trava: corteMeio SEMPRE pelo menos 5 abaixo de corteTransp, não
+      // importa quão escuro lumFundo seja — sem isso, um fundo medido muito
+      // escuro podia inverter os dois cortes e virar tudo opaco (a barra
+      // sólida que apareceu no relatório).
+      const corteMeio = Math.min(Math.max(corteTransp - 45, 20), corteTransp - 5);
       for (let i = 0; i < px.length; i += 4) {
         if (px[i + 3] === 0) continue; // já transparente (borda do enquadramento)
         const lum = luminancia(px[i], px[i + 1], px[i + 2]);
