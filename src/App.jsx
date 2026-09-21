@@ -317,6 +317,21 @@ async function apiSaveDespesa(d) {
   return data;
 }
 
+// Salva várias despesas de uma vez (uma gravação só na planilha) — usado ao
+// lançar um lote de passagens de pedágio importadas do extrato, em vez de
+// mandar uma requisição por passagem (arriscava estourar cota/tempo do
+// Apps Script com lotes grandes, dezenas de itens de uma vez).
+async function apiSaveDespesasLote(itens) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "saveDespesasLote", itens }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao salvar em lote");
+  return data;
+}
+
 async function apiAddCarro(carro, colaborador) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -504,7 +519,7 @@ async function apiOcrExtrato(base64) {
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "Erro ao ler o extrato");
-  return data.passagens || [];
+  return { passagens: data.passagens || [], interpretado: data.interpretado !== false };
 }
 
 async function apiList(colaborador) {
@@ -1079,9 +1094,11 @@ function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites
   const [descricao, setDescricao] = useState("");
   const [compB64, setCompB64] = useState(null);
   const [compNome, setCompNome] = useState("");
+  const [compIsPdf, setCompIsPdf] = useState(false);
   const [saving, setSaving] = useState(false);
   const camRef = useRef(null);
   const galRef = useRef(null);
+  const pdfRef = useRef(null);
   const camCupomRef = useRef(null);
   const galCupomRef = useRef(null);
 
@@ -1109,6 +1126,7 @@ function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites
       const b64 = await fileToResizedBase64(file, 1600, 0.7);
       setCompB64(b64);
       setCompNome(file.name || "comprovante.jpg");
+      setCompIsPdf(false);
       if (lerIA) {
         setLendoCupom(true);
         try {
@@ -1127,6 +1145,26 @@ function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites
         }
       }
     } catch { avisar("Não consegui processar a imagem do comprovante."); }
+  }
+
+  // PDF é pra documento grande (contrato, termo, nota extensa de várias
+  // páginas) — bem diferente de foto de recibo: não redimensiona (perderia
+  // o arquivo), não tenta OCR em cima (não faz sentido pra um contrato).
+  async function pickComprovantePdf(file) {
+    if (!file) return;
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onerror = () => reject(new Error("Não consegui ler o arquivo."));
+        reader.readAsDataURL(file);
+      });
+      setCompB64(b64);
+      setCompNome(file.name || "documento.pdf");
+      setCompIsPdf(true);
+    } catch (e) {
+      avisar("Não consegui processar esse PDF. Tente novamente.");
+    }
   }
 
   async function salvar() {
@@ -1159,6 +1197,8 @@ function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites
         data, carro: tipo === "Pedágio" ? carro : "—", tipo, valor: valorFinal,
         empresa,
         descricao, comprovanteImage: compB64 || undefined, origem: "manual",
+        comprovanteMime: compIsPdf ? "application/pdf" : undefined,
+        comprovanteExt: compIsPdf ? "pdf" : undefined,
         pessoasRateio: precisaRateio ? nPessoas : 1,
         rateioCom: precisaRateio ? comQuem : "",
         valorTotalPago,
@@ -1303,20 +1343,30 @@ function DespesaManual({ carros, carroInicial, empresas, empresaInicial, limites
           </span>
         </button>
       </div>
-      <div className="flex gap-1.5 mb-3">
+      <div className="grid grid-cols-3 gap-1.5 mb-1.5">
         <button onClick={() => camRef.current?.click()} disabled={lendoCupom}
-          className="flex-1 rounded-lg py-2.5 text-sm font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
-          {lendoCupom ? "⟳ lendo..." : "📷 Tirar foto"}
+          className="rounded-lg py-2.5 text-xs font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+          {lendoCupom ? "⟳" : "📷 Foto"}
         </button>
         <button onClick={() => galRef.current?.click()} disabled={lendoCupom}
-          className="flex-1 rounded-lg py-2.5 text-sm font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
-          {lendoCupom ? "⟳..." : "🖼️ Da galeria"}
+          className="rounded-lg py-2.5 text-xs font-medium text-white disabled:opacity-60" style={{ background: BTJ_BLUE }}>
+          {lendoCupom ? "⟳" : "🖼️ Galeria"}
+        </button>
+        <button onClick={() => pdfRef.current?.click()} disabled={lendoCupom}
+          className="rounded-lg py-2.5 text-xs font-medium disabled:opacity-60 border" style={{ borderColor: BTJ_BLUE, color: BTJ_BLUE }}>
+          📄 PDF
         </button>
       </div>
+      <p className="text-[10px] text-gray-400 mb-3">PDF é pra documento grande (contrato, termo) — fica com link acessível a qualquer momento. Pra recibo do dia a dia, prefira foto.</p>
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { pickComprovante(e.target.files[0], usarIA); e.target.value = ""; }} />
       <input ref={galRef} type="file" accept="image/*" className="hidden" onChange={e => { pickComprovante(e.target.files[0], usarIA); e.target.value = ""; }} />
-      {compNome && <p className="text-[10px] mb-3" style={{ color: "#0F6E56" }}>🧾 {compNome} — será enviado ao Drive ao salvar</p>}
-      {!compNome && <p className="text-[10px] mb-3" style={{ color: "#C62A2F" }}>⚠ Anexe a foto do comprovante pra poder salvar</p>}
+      <input ref={pdfRef} type="file" accept="application/pdf" className="hidden" onChange={e => { pickComprovantePdf(e.target.files[0]); e.target.value = ""; }} />
+      {compNome && (
+        <p className="text-[10px] mb-3" style={{ color: "#0F6E56" }}>
+          {compIsPdf ? "📄" : "🧾"} {compNome} — será enviado ao Drive ao salvar
+        </p>
+      )}
+      {!compNome && <p className="text-[10px] mb-3" style={{ color: "#C62A2F" }}>⚠ Anexe o comprovante (foto ou PDF) pra poder salvar</p>}
 
       <div className="flex gap-2">
         <button onClick={salvar} disabled={saving || !compNome}
@@ -1371,15 +1421,22 @@ function ImportarExtrato({ carros, carroInicial, empresas, records, colaborador,
     setLoading(true);
     try {
       let todas = [];
+      let algumaFalhouInterpretar = false;
       for (const file of files) {
         const b64 = await fileToResizedBase64(file, 1600, 0.7);
-        const lista = await apiOcrExtrato(b64);
-        todas = todas.concat(lista);
+        const r = await apiOcrExtrato(b64);
+        if (!r.interpretado) algumaFalhouInterpretar = true;
+        todas = todas.concat(r.passagens);
       }
       // Sem dedupe entre passagens do mesmo print: passagens iguais (mesma data/local/valor)
       // podem ser genuinamente diferentes (duas passadas pela mesma praça no mesmo dia).
       todas.sort((a, b) => String(a.data).localeCompare(String(b.data)));
-      if (!todas.length) { avisar("Não encontrei passagens nesses prints. Tente imagens mais nítidas."); return; }
+      if (!todas.length) {
+        avisar(algumaFalhouInterpretar
+          ? "Não consegui interpretar essa foto do extrato — tente uma imagem mais nítida, bem enquadrada, sem cortar as linhas."
+          : "Não encontrei passagens nesses prints. Tente imagens mais nítidas.");
+        return;
+      }
       // Checa contra o que já está na planilha (essa sim é uma duplicata real).
       let comCheck = todas;
       try { comCheck = await apiCheckDuplicatas(todas, colaborador); } catch { /* segue sem o check se falhar */ }
@@ -1412,14 +1469,13 @@ function ImportarExtrato({ carros, carroInicial, empresas, records, colaborador,
         setSaving(false);
         return;
       }
-      for (const p of marcadas) {
-        await apiSaveDespesa({
-          data: p.data, carro, tipo: "Pedágio",
-          empresa: empresaPorDia[p.data] || empresaPadrao,
-          valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
-          colaborador,
-        });
-      }
+      const itens = marcadas.map(p => ({
+        data: p.data, carro, tipo: "Pedágio",
+        empresa: empresaPorDia[p.data] || empresaPadrao,
+        valor: Number(p.valor) || 0, descricao: p.local || "", origem: "extrato",
+        colaborador,
+      }));
+      await apiSaveDespesasLote(itens);
       avisar(`${marcadas.length} lançamento(s) do tag lançado(s) na planilha (R$ ${totalSel.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}).`);
       onDone();
     } catch (e) {
