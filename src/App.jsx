@@ -467,6 +467,19 @@ async function apiUpdateDespesa(d) {
   return data;
 }
 
+// Apaga TODOS os lançamentos (despesas + km) de um período ainda não enviado
+// (ex: lançamentos feitos por engano com data errada, de anos atrás).
+async function apiExcluirPeriodo(usuario, periodo) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "excluirLancamentosPeriodo", usuario, periodo }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Erro ao excluir o período");
+  return data;
+}
+
 async function apiDeleteDespesa(id) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
@@ -1588,7 +1601,12 @@ function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, on
     const k = periodKey(d.data);
     (byPeriod[k] = byPeriod[k] || []).push(d);
   });
-  const keys = Object.keys(byPeriod).sort().reverse().slice(0, 4);
+  const todasKeys = Object.keys(byPeriod).sort().reverse();
+  // Por padrão só os 4 mais recentes; períodos mais antigos (ex: lançamentos
+  // feitos com data errada, de anos atrás) ficam atrás deste botão pra poder
+  // achar e excluir.
+  const [verAntigos, setVerAntigos] = useState(false);
+  const keys = verAntigos ? todasKeys : todasKeys.slice(0, 4);
 
   const [expanded, setExpanded] = useState(keys[0] || null);
   const [edit, setEdit] = useState(null); // { id, valor, descricao, data }
@@ -1692,6 +1710,11 @@ function GestaoDespesas({ titulo, icone, despesas, carros, travado, onChange, on
           );
         })}
       </div>
+      {todasKeys.length > 4 && (
+        <button onClick={() => setVerAntigos(v => !v)} className="w-full text-xs text-gray-500 mt-3 py-1.5">
+          {verAntigos ? "Ocultar períodos mais antigos" : `Ver períodos mais antigos (${todasKeys.length - 4})`}
+        </button>
+      )}
     </Card>
   );
 }
@@ -2419,7 +2442,7 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
                 ) : (
                   <button key={d.id}
                     onClick={() => {
-                      if (aguardandoOuReenviado || emRevisaoReal || concluidoReal) {
+                      if (aguardandoOuReenviado || concluidoReal) { // em revisão: pode abrir; o servidor só aceita os dias marcados
                         avisar("Este período está travado — não dá pra editar despesas agora.");
                         return;
                       }
@@ -2680,7 +2703,7 @@ export default function App() {
   // depois da tentativa, não antes.
   function periodoTravado(dataISO) {
     const st = statusRealDoPeriodo(periodKey(dataISO));
-    return st === "concluido" || st === "aguardando" || st === "revisao" || st === "reenviado" || st === "pendente";
+    return st === "concluido" || st === "aguardando" || st === "reenviado" || st === "pendente";
   }
 
   // Re-tenta envios pendentes quando a conexão volta
@@ -2767,6 +2790,37 @@ export default function App() {
     }).catch(() => {
       setDetalhesAntigos(prev => ({ ...prev, [periodo]: "erro" }));
     });
+  }
+
+  // Recarrega À FORÇA o detalhe de um mês antigo (depois de excluir algo).
+  function recarregarDetalheAntigo(periodo) {
+    setDetalhesAntigos(prev => ({ ...prev, [periodo]: "carregando" }));
+    return apiDetalheRelatorio(usuario.email, usuario.email, periodo).then(d => {
+      setDetalhesAntigos(prev => ({ ...prev, [periodo]: { viagens: d.viagens || [], despesas: d.despesas || [] } }));
+    }).catch(() => {
+      setDetalhesAntigos(prev => ({ ...prev, [periodo]: "erro" }));
+    });
+  }
+  async function excluirDespesaHistorico(periodo, id) {
+    if (!(await confirmar("Excluir esta despesa? Não dá pra desfazer."))) return;
+    try {
+      await apiDeleteDespesa(id);
+      await recarregarDetalheAntigo(periodo);
+      refreshStatusBackend();
+    } catch (e) { avisar("Erro ao excluir: " + (e.message || "")); }
+  }
+  async function excluirPeriodoRascunho(periodo) {
+    const det = detalhesAntigos[periodo];
+    const nD = det && det !== "carregando" && det !== "erro" ? det.despesas.length : "?";
+    const nV = det && det !== "carregando" && det !== "erro" ? det.viagens.length : "?";
+    if (!(await confirmar(`Apagar TUDO de ${monthLabelFromKey(periodo)}?\n${nD} despesa(s) e ${nV} viagem(ns) serão excluídas da planilha. Não dá pra desfazer.`))) return;
+    try {
+      const r = await apiExcluirPeriodo(usuario.email, periodo);
+      avisar(`${r.despesas} despesa(s) e ${r.viagens} viagem(ns) excluída(s).`);
+      setDetalhesAntigos(prev => { const n = { ...prev }; delete n[periodo]; return n; });
+      setExpandedMonth(null);
+      refreshStatusBackend();
+    } catch (e) { avisar("Erro ao excluir: " + (e.message || "")); }
   }
 
   const [statusRefreshing, setStatusRefreshing] = useState(false);
@@ -3219,8 +3273,12 @@ export default function App() {
   // aparelho específico. Cada ano só abre sozinho se tiver alguma pendência
   // de verdade; senão fica recolhido, mesmo sendo o ano atual.
   const doisAnosAtras = String(Number(hojeKey.slice(0, 4)) - 2);
+  const ANO_PRECISA_ACAO_ = ["atrasado", "pendente", "reaberto", "revisao"];
+  // Períodos com mais de 2 anos só aparecem se ainda precisam de ação (ex:
+  // lançamentos feitos com data errada, nunca enviados) — senão ficariam
+  // invisíveis e impossíveis de limpar.
   const periodosHistorico = [...new Set([...Object.keys(statusBackend), ...monthKeysAll])]
-    .filter(p => p.slice(0, 4) >= doisAnosAtras)
+    .filter(p => p.slice(0, 4) >= doisAnosAtras || ANO_PRECISA_ACAO_.indexOf(statusRealDoPeriodo(p)) !== -1)
     .sort().reverse();
   const anosAgrupados = (() => {
     const mapa = {};
@@ -3234,7 +3292,6 @@ export default function App() {
     });
     return Object.values(mapa).sort((a, b) => a.ano < b.ano ? 1 : -1);
   })();
-  const ANO_PRECISA_ACAO_ = ["atrasado", "pendente", "reaberto", "revisao"];
   function anoTemPendencia(g) {
     return g.periodos.some(p => ANO_PRECISA_ACAO_.indexOf(statusRealDoPeriodo(p)) !== -1);
   }
@@ -4190,7 +4247,9 @@ export default function App() {
                                         }
                                         const dias = [...new Set([...det.viagens.map(v => v.data), ...det.despesas.map(d => d.data)])].sort();
                                         if (!dias.length) return <p className="text-xs text-gray-400 text-center py-4">Sem lançamentos neste período.</p>;
-                                        return dias.map(dia => {
+                                        // Período ainda não enviado (nem em aprovação/concluído): dá pra apagar.
+                                        const periodoLivre = ["atrasado", "aberto", "reaberto"].indexOf(statusRealDoPeriodo(key)) !== -1;
+                                        const linhasDias = dias.map(dia => {
                                           const viagensDia = det.viagens.filter(v => v.data === dia);
                                           const despesasDia = det.despesas.filter(d => d.data === dia);
                                           return (
@@ -4205,12 +4264,31 @@ export default function App() {
                                               {despesasDia.map((d, i) => (
                                                 <div key={"d" + i} className="flex justify-between items-baseline text-xs text-gray-500">
                                                   <span className="truncate">{(d.tipo || "").toLowerCase().indexOf("ped") === 0 ? "🛣️" : "💳"} {d.tipo}{d.descricao ? ` · ${d.descricao}` : ""}</span>
-                                                  <span className="shrink-0 ml-2">R$ {(d.valor || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                                                  <span className="shrink-0 ml-2">
+                                                    R$ {(d.valor || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                                                    {periodoLivre && d.id && (
+                                                      <button onClick={() => excluirDespesaHistorico(key, d.id)} className="ml-2" style={{ color: "#C62A2F" }} aria-label="Excluir despesa">🗑</button>
+                                                    )}
+                                                  </span>
                                                 </div>
                                               ))}
                                             </div>
                                           );
                                         });
+                                        return (
+                                          <>
+                                            {linhasDias}
+                                            {periodoLivre && (
+                                              <div className="px-3.5 py-2.5 text-center">
+                                                <button onClick={() => excluirPeriodoRascunho(key)}
+                                                  className="text-[11px] px-3 py-1.5 rounded-lg border" style={{ borderColor: "#F4C7C3", color: "#B3261E" }}>
+                                                  🗑 Excluir tudo deste período
+                                                </button>
+                                                <p className="text-[10px] text-gray-400 mt-1">Só vale enquanto o relatório não foi enviado.</p>
+                                              </div>
+                                            )}
+                                          </>
+                                        );
                                       })()}
                                     </div>
                                   )}
