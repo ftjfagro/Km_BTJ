@@ -2179,12 +2179,12 @@ function RevisaoRelatorio({ periodo, records, despesas, taxas, colaboradores, us
   async function reenviarRevisao() {
     const itens = (det.revisao?.itens || []).map(it => ({
       dia: it.dia,
-      corrigido: !!(respostasRevisao[it.dia]?.corrigido),
+      corrigido: !!(respostasRevisao[it.dia]?.corrigido) || !!it.mudou,
       justificativa: respostasRevisao[it.dia]?.justificativa || "",
     }));
     const faltando = itens.find(it => !it.corrigido && !String(it.justificativa).trim());
     if (faltando) {
-      avisar("O dia " + formatDateShort(faltando.dia) + " precisa ser corrigido (marque a caixa, depois de ajustar o lançamento) ou justificado.");
+      avisar("O dia " + formatDateShort(faltando.dia) + " ainda não foi alterado — corrija o lançamento ou escreva uma justificativa.");
       return;
     }
     setReenviando(true);
